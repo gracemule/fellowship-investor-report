@@ -1,0 +1,12 @@
+#!/bin/sh
+# Run the Chui reporting agent.  Usage: ./chui [--provider deepseek|anthropic] "instruction"
+#
+# The virtualenv lives OUTSIDE this folder on purpose. This directory is under
+# ~/Desktop, where macOS marks .pth files "hidden"; Python 3.12 silently skips
+# hidden .pth files, which breaks the editable install within seconds of creating it.
+#
+# Recreate it with:  UV_PROJECT_ENVIRONMENT=~/.venvs/chui-reporter uv sync --extra dev
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PY="${CHUI_PYTHON:-$HOME/.venvs/chui-reporter/bin/python}"
+[ -x "$PY" ] || { echo "venv missing at $PY -- see the note at the top of this script" >&2; exit 1; }
+cd "$HERE" && exec "$PY" -m chui_reporter.agent.run "$@"

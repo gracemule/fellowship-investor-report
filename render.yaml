@@ -1,0 +1,34 @@
+# Render blueprint for the Chui Ventures reporter.
+#
+# One web service. The agent runs inside it as a background worker thread, so there is no
+# separate worker or cron service to deploy. Keep numInstances at 1: a run is owned by the process
+# that started it, and recovery after a restart assumes a single owner.
+#
+# Pick the region closest to the Neon database (the connection string's host shows its region).
+services:
+  - type: web
+    name: chui-reporter
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard              # LibreOffice + PDF rasterising need headroom; 512 MB tiers run out of memory
+    region: oregon              # CHANGE to match the Neon region
+    numInstances: 1
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL           # Neon pooled connection string
+        sync: false
+      - key: CHUI_ACCESS_PASSWORD   # the shared password the team signs in with
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY      # optional; enables the Anthropic provider / automatic fallback
+        sync: false
+      - key: CHUI_SESSION_SECRET
+        generateValue: true
+      - key: CHUI_PROVIDER
+        value: deepseek
+      - key: CHUI_FALLBACK_PROVIDER # used only if its key is set
+        value: anthropic
+      - key: CHUI_ENV
+        value: production

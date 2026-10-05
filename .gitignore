@@ -1,0 +1,32 @@
+# The LP source data lives in the parent directory and must never be committed.
+# Belt and braces: ignore the document types outright.
+*.xlsx
+*.xls
+*.docx
+*.pdf
+data_fixtures/
+build_artifacts/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+
+# Local agent state: checkpoints hold conversation text and figures from LP documents
+*.sqlite3
+*.sqlite3-*
+
+.workspace/
+.claude/
+
+# Tests that open the real LP source documents (or carry their figures) stay on the machine that has them.
+tests/private/

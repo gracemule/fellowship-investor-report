@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex">
+  <title>Chui Ventures · Investor reports</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2300223B'/%3E%3Cpath d='M9 22V10h3.2l7.6 8.6V10H23v12h-3.1l-7.7-8.7V22z' fill='%23E25A00'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-pane="agent" class="booting">
+  <div id="app" class="app">
+    <aside class="rail" aria-label="Agent">
+      <header class="mast">
+        <div class="brand"><span class="wordmark">Chui Ventures</span><span class="fund">Fund I</span></div>
+        <div class="period-wrap">
+          <button id="period" class="quiet period" type="button" aria-haspopup="menu" aria-expanded="false"></button>
+          <div id="menu" class="menu" role="menu" hidden></div>
+        </div>
+      </header>
+
+      <section id="hero" class="hero" aria-live="polite"></section>
+
+      <nav id="tabs" class="tabs" role="tablist" aria-label="Agent views">
+        <button role="tab" id="tab-activity" data-tab="activity" aria-selected="true">Activity</button>
+        <button role="tab" id="tab-sources" data-tab="sources" aria-selected="false">Sources<span class="count" id="count-sources"></span></button>
+        <button role="tab" id="tab-notes" data-tab="notes" aria-selected="false">Review<span class="count" id="count-notes"></span></button>
+        <span class="ink" aria-hidden="true"></span>
+      </nav>
+
+      <div class="panes">
+        <div class="panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabindex="-1"></div>
+        <div class="panel" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" tabindex="-1" hidden></div>
+        <div class="panel" id="panel-notes" role="tabpanel" aria-labelledby="tab-notes" tabindex="-1" hidden></div>
+      </div>
+
+      <form id="composer" class="composer" autocomplete="off">
+        <input id="say" type="text" maxlength="2000" placeholder="Ask for a change…" aria-label="Message the agent">
+        <button type="submit" aria-label="Send" disabled></button>
+      </form>
+    </aside>
+
+    <main id="viewer" class="viewer" aria-label="Report"></main>
+  </div>
+
+  <nav id="switch" class="switch" aria-label="Switch view">
+    <button data-pane="agent" aria-pressed="true">Agent</button>
+    <button data-pane="report" aria-pressed="false">Report</button>
+  </nav>
+
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand"><span class="wordmark">Chui Ventures</span><span class="fund">Fund I</span></div>
+      <h1 class="headline">Investor reports</h1>
+      <p class="detail">Enter the access password to continue.</p>
+      <label class="field"><span class="sr">Password</span>
+        <input id="password" type="password" autocomplete="current-password" required placeholder="Password"></label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button class="primary" type="submit">Continue</button>
+    </form>
+  </div>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
