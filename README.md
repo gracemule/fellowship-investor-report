@@ -39,8 +39,13 @@ to render anything else.
 5. **It asks when it needs a person.** `ask_user` (a judgement the data cannot settle) and `request_sources`
    (missing documents) pause the run through LangGraph's `interrupt`. The answer, or the arrival of the files,
    resumes it from the exact same point, even after a restart. Questions are capped per run.
-6. **Every render becomes a numbered version** (PDF, Word, review notes) with the sections that changed, so
-   the interface can show what an update touched.
+6. **One input box talks to the agent.** It grows as you type, Enter sends, files can be attached (button, drag and
+   drop, or paste; PDF, Excel, Word, CSV, text, images). While the agent works, a message is steering: it is queued
+   and delivered at the next step, and the send button becomes Stop when the box is empty. When the agent has asked
+   a question, the box is the answer. Attached files are stored under `Uploads/` and survive folder syncs.
+7. **Every render becomes a numbered version** (PDF, Word, review notes) with the sections that changed, so
+   the interface can show what an update touched. Any version can be opened beside the latest, its changed pages
+   are marked, and "Changes" shows the wording that changed (kept from the version after this feature shipped).
 
 ## Reliability
 

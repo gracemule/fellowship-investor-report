@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,13 @@ from .slots import SLOTS, Slot, slot_files, slot_for_path  # noqa: F401
 
 MAX_FILE_BYTES = 60 * 1024 * 1024
 WORKSPACE = "default"
+
+# Files the user attaches in the composer live under this prefix. They are not part of the folder
+# the browser mirrors, so a folder sync must never mark them removed.
+UPLOADS = "Uploads/"
+ATTACH_EXT = {".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv", ".txt", ".md", ".json",
+              ".png", ".jpg", ".jpeg", ".webp", ".gif"}
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 class SyncError(ValueError):
@@ -114,7 +122,7 @@ def commit(store: Store, manifest: list[dict], workspace: str = WORKSPACE) -> Ch
         missing = [p for p, h in wanted.items() if have.get(p) != h]
         if missing:
             raise SyncError(f"{len(missing)} file(s) have not been uploaded yet, e.g. {missing[0]}")
-        gone = [p for p in have if p not in wanted]
+        gone = [p for p in have if p not in wanted and not p.startswith(UPLOADS)]
         if gone:
             c.execute(f"UPDATE {store._t('source_file')} SET status='removed', content=NULL, updated_at=now() "
                       f"WHERE workspace_id=%s AND path = ANY(%s)", (workspace, gone))
@@ -211,7 +219,7 @@ def required_missing(cov: list[SlotStatus]) -> list[SlotStatus]:
 def unplaced(store: Store, workspace: str = WORKSPACE) -> list[str]:
     """Files in the folder that no slot recognises: shown so nothing is silently ignored."""
     return [r["path"] for r in _present(store, workspace) if slot_for_path(r["path"]) is None
-            and not r["path"].casefold().startswith("branding/")]
+            and not r["path"].casefold().startswith(("branding/", UPLOADS.casefold()))]
 
 
 def affected_sections(paths: list[str]) -> list[str]:
@@ -230,3 +238,47 @@ def affected_slots(paths: list[str]) -> list[Slot]:
         if s:
             seen[s.id] = s
     return list(seen.values())
+
+
+# ---- attachments ------------------------------------------------------------------------
+
+
+def clean_attachment_name(name: str) -> str:
+    base = re.sub(r"[^\w .()+&,'-]", "_", os.path.basename(name.replace("\\", "/")).strip()) or "attachment"
+    return base[:120]
+
+
+def put_attachment(store: Store, name: str, data: bytes, workspace: str = WORKSPACE) -> dict:
+    """Store a file the user attached to a message. A different file with the same name is kept
+    alongside ("name (2).pdf") rather than silently replacing the first."""
+    name = clean_attachment_name(name)
+    stem, ext = os.path.splitext(name)
+    if ext.lower() not in ATTACH_EXT:
+        raise SyncError(f"{name}: this kind of file cannot be attached (PDF, Excel, Word, CSV, text and images can)")
+    sha = hashlib.sha256(data).hexdigest()
+    with store.conn() as c:
+        taken = {r["path"]: r["sha256"] for r in c.execute(
+            f"SELECT path, sha256 FROM {store._t('source_file')} WHERE workspace_id=%s AND status='present' "
+            f"AND path LIKE %s", (workspace, UPLOADS + "%"))}
+    path, n = UPLOADS + name, 1
+    while path in taken and taken[path] != sha:
+        n += 1
+        path = f"{UPLOADS}{stem} ({n}){ext}"
+    put_file(store, path, data, sha, None, workspace)
+    return {"path": path, "name": path[len(UPLOADS):], "size": len(data),
+            "kind": "image" if ext.lower() in IMAGE_EXT else "document"}
+
+
+def remove_attachment(store: Store, path: str, workspace: str = WORKSPACE) -> bool:
+    path = safe_path(path)
+    if not path.startswith(UPLOADS):
+        raise SyncError("only attached files can be removed this way")
+    with store.conn() as c:
+        r = c.execute(f"UPDATE {store._t('source_file')} SET status='removed', content=NULL, updated_at=now() "
+                      f"WHERE workspace_id=%s AND path=%s AND status='present' RETURNING path", (workspace, path)).fetchone()
+    return bool(r)
+
+
+def attachments(store: Store, workspace: str = WORKSPACE) -> list[dict]:
+    return [{"path": r["path"], "name": r["path"][len(UPLOADS):], "size": r["size"]}
+            for r in _present(store, workspace) if r["path"].startswith(UPLOADS)]

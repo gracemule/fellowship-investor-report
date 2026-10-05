@@ -25,6 +25,7 @@ import queue
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -309,19 +310,41 @@ class Runtime:
                 return {"ok": False, "reason": "nothing_to_resume"}
         return {"ok": True, "run": self._create("resume", last.get("instruction") or "Continue the previous work.")}
 
-    def steer(self, text: str) -> dict:
+    @staticmethod
+    def with_attachments(text: str, paths: list[str]) -> str:
+        """The user's words plus a plain note of what they attached, for the agent."""
+        if not paths:
+            return text
+        names = ", ".join(paths)
+        return ((text.strip() + "\n\n") if text.strip() else "") + (
+            f"[The user attached: {names}. These are in your source folder; read them with read_pdf, "
+            f"read_text, the excel tools or look_at_image as appropriate. Figures that appear only in an "
+            f"image cannot be recorded or used.]")
+
+    def steer(self, text: str, attachments: list[dict] | None = None) -> dict:
+        """A message from the user while (or instead of) the agent working.
+
+        While a run is active it is queued and delivered at the next clean step boundary; with no run
+        it starts one. Attachments are files already stored under Uploads/."""
         text = text.strip()
-        if not text:
+        attachments = attachments or []
+        paths = [a["path"] for a in attachments]
+        if not text and not paths:
             return {"ok": False, "reason": "empty"}
+        body = self.with_attachments(text or "I have attached these files. Use them where they are relevant.", paths)
+        sid = uuid.uuid4().hex[:8]
         with self._lock:
             active = state.active_run(self.store)
-            state.emit(self.store, "steer", text[:400], run_id=active["id"] if active else None)
-            if active:
-                self._steer.append(text)
-                return {"ok": True, "applied": "next_step", "run": active["id"]}
-            if state.latest_version(self.report_store()) is None:
+            detail = {"id": sid, "queued": bool(active), "attachments": [
+                {"name": a["name"], "kind": a.get("kind", "document")} for a in attachments]}
+            if not active and state.latest_version(self.report_store()) is None:
                 return {"ok": False, "reason": "no_report"}
-        return {"ok": True, "applied": "new_run", "run": self._create("steer", text)}
+            state.emit(self.store, "steer", text or "(attached files)", run_id=active["id"] if active else None,
+                       detail=detail)
+            if active:
+                self._steer.append({"id": sid, "text": body})
+                return {"ok": True, "applied": "next_step", "run": active["id"], "id": sid}
+        return {"ok": True, "applied": "new_run", "run": self._create("steer", body), "id": sid}
 
     def answer(self, qid: str, text: str) -> dict:
         q = state.get_question(self.store, qid)
@@ -385,6 +408,7 @@ class Runtime:
             outcome = "failed"
         finally:
             hb.stop()
+            self._drop_steer(run_id)
         if outcome == "stopped":
             state.update_run(self.store, run_id, status="stopped")
             state.emit(self.store, "run.end", "Stopped.", run_id=run_id, detail={"status": "stopped"})
@@ -475,6 +499,10 @@ class Runtime:
                 payload = {"messages": [HumanMessage(content=(
                     "Carry on from where you were. Keep going until the report is rendered and inspected."))]}
                 continue
+            late = self._take_steer(rid) if outcome == "finished" else None
+            if late:                          # a message that arrived after the last step: do not lose it
+                payload = {"messages": [HumanMessage(content="The user says: " + late)]}
+                continue
             missing = unfinished(rs)
             if guard.triggered >= 3:
                 raise RunFailed("The agent kept repeating the same step and was stopped. Your work is saved; "
@@ -560,6 +588,20 @@ class Runtime:
                 raise RunFailed(f.message + ("" if f.kind in ("auth", "quota") else " Your work is saved; "
                                 "resume when it is back."), f.kind) from exc
 
+    def _take_steer(self, rid: str) -> str | None:
+        with self._lock:
+            batch, self._steer = self._steer, []
+        for item in batch:
+            state.emit(self.store, "steer.applied", "", run_id=rid, detail={"id": item["id"]})
+        return " ".join(i["text"] for i in batch) if batch else None
+
+    def _drop_steer(self, rid: str) -> None:
+        """Messages still queued when a run ends without having delivered them are reported, not hidden."""
+        with self._lock:
+            batch, self._steer = self._steer, []
+        for item in batch:
+            state.emit(self.store, "steer.dropped", "", run_id=rid, detail={"id": item["id"]})
+
     def _fallback(self) -> bool:
         from ..agent.llm import PROVIDERS, api_key, resolve_provider
         want = os.environ.get("CHUI_FALLBACK_PROVIDER", "").strip().lower()
@@ -624,9 +666,10 @@ class Runtime:
                     return "steered", nudge
                 with self._lock:
                     if self._steer:
-                        text = " ".join(self._steer)
-                        self._steer.clear()
-                        return "steered", "The user says: " + text
+                        batch, self._steer = self._steer, []
+                        for item in batch:
+                            state.emit(self.store, "steer.applied", "", run_id=rid, detail={"id": item["id"]})
+                        return "steered", "The user says: " + " ".join(i["text"] for i in batch)
         if interrupts:
             return "interrupted", interrupts
         if self._limit_hit:                 # the graph's own step allowance for this stretch ran out

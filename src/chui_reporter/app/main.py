@@ -208,14 +208,63 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
     async def stop_run(request: Request):
         return await run_in_threadpool(rt_of(request).stop)
 
+    def _attachments(rt: Runtime, paths) -> list[dict]:
+        """Resolve attachment paths the client names to stored files (and refuse anything else)."""
+        have = {a["path"]: a for a in ws_sync.attachments(rt.store)}
+        out = []
+        for p_ in (paths or [])[:8]:
+            if p_ in have:
+                ext = "." + p_.rsplit(".", 1)[-1].lower() if "." in p_ else ""
+                out.append({**have[p_], "kind": "image" if ext in ws_sync.IMAGE_EXT else "document"})
+        return out
+
     @app.post("/api/steer")
     async def steer(request: Request, body: dict = Body(...)):
+        rt = rt_of(request)
         text = str(body.get("text", ""))[:2000]
-        return await run_in_threadpool(rt_of(request).steer, text)
+        atts = await run_in_threadpool(_attachments, rt, body.get("attachments"))
+        return await run_in_threadpool(rt.steer, text, atts)
+
+    @app.put("/api/attachments")
+    async def attach(request: Request, name: str):
+        rt = rt_of(request)
+        declared = int(request.headers.get("content-length") or 0)
+        if declared > ws_sync.MAX_FILE_BYTES:
+            raise HTTPException(413, "file too large (60 MB limit)")
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, "empty file")
+        try:
+            info = await run_in_threadpool(ws_sync.put_attachment, rt.store, name, data)
+        except ws_sync.SyncError as exc:
+            raise HTTPException(415 if "cannot be attached" in str(exc) else 400, str(exc)) from exc
+        return info
+
+    @app.delete("/api/attachments")
+    async def unattach(request: Request, path: str):
+        try:
+            ok = await run_in_threadpool(ws_sync.remove_attachment, rt_of(request).store, path)
+        except ws_sync.SyncError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": ok}
+
+    @app.post("/api/attachments/commit")
+    async def attachments_as_sources(request: Request, body: dict = Body(...)):
+        """Files attached with no message and no report to change: they simply join the sources."""
+        rt = rt_of(request)
+        atts = await run_in_threadpool(_attachments, rt, body.get("attachments"))
+        if not atts:
+            raise HTTPException(400, "nothing attached")
+        ch = ws_sync.Changes(added=[a["path"] for a in atts])
+        await run_in_threadpool(rt.on_sync, ch)
+        return {"ok": True}
 
     @app.post("/api/questions/{qid}/answer")
     async def answer(request: Request, qid: str, body: dict = Body(...)):
         text = str(body.get("answer", "")).strip()[:2000]
+        atts = await run_in_threadpool(_attachments, rt_of(request), body.get("attachments"))
+        if atts:
+            text = Runtime.with_attachments(text or "I have attached the files.", [a["path"] for a in atts])
         if body.get("skip"):
             text = SKIPPED
         if not text:
@@ -254,25 +303,83 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         v = state.latest_version(rs)
         return rs, v
 
+    def _describe_version(vrow: dict, previous: dict | None) -> dict:
+        sm = vrow["summary"]
+        titles = {x["key"]: x["title"] for x in sm.get("sections", [])}
+        changed = sm.get("changed", []) if previous else []
+        return {"version": vrow["version"], "pages": vrow["pages"], "created_at": vrow["created_at"],
+                "changed": [{"key": k, "title": titles.get(k, "Cover page" if k == "cover" else k)} for k in changed],
+                "first": previous is None}
+
     @app.get("/api/report")
-    async def report(request: Request):
+    async def report(request: Request, v: int | None = None):
         rt = rt_of(request)
-        rs, v = await run_in_threadpool(_latest, rt)
-        if not v:
+        rs = rt.report_store()
+        rows = await run_in_threadpool(state.versions, rs, 50)
+        if not rows:
             return {"version": None}
-        sm = v["summary"]
+        row = next((r for r in rows if r["version"] == v), None) if v else rows[0]
+        if row is None:
+            raise HTTPException(404, "no such version")
+        idx = rows.index(row)
+        previous = rows[idx + 1] if idx + 1 < len(rows) else None
+        sm = row["summary"]
         sp = sm.get("section_pages", {})
-        changed = [k for k in sm.get("changed", []) if k in sp]
+        changed = [k for k in sm.get("changed", []) if k in sp] if previous else []
         sizes = sm.get("sizes")
         if not sizes:                                   # versions stored before sizes were recorded
-            pdf = await run_in_threadpool(state.version_blob, rs, v["version"], "pdf")
+            pdf = await run_in_threadpool(state.version_blob, rs, row["version"], "pdf")
             sizes = await run_in_threadpool(pages.page_sizes, pdf) if pdf else []
-        return {"version": v["version"], "pages": v["pages"], "created_at": v["created_at"], "sizes": sizes,
-                "sections": [{"key": s["key"], "title": s["title"], "page": sp.get(s["key"])}
-                             for s in sm.get("sections", [])],
-                "changed": sm.get("changed", []),
-                "changed_pages": sorted({sp[k] for k in changed}) if v["version"] > 1 else [],
-                "versions": await run_in_threadpool(state.versions, rs, 8)}
+        return {"version": row["version"], "latest": rows[0]["version"], "pages": row["pages"],
+                "created_at": row["created_at"], "sizes": sizes,
+                "sections": [{"key": s_["key"], "title": s_["title"], "page": sp.get(s_["key"])}
+                             for s_ in sm.get("sections", [])],
+                "changed": sm.get("changed", []) if previous else [],
+                "changed_pages": sorted({sp[k] for k in changed}),
+                "versions": [_describe_version(r, rows[i + 1] if i + 1 < len(rows) else None)
+                             for i, r in enumerate(rows[:12])]}
+
+    @app.get("/api/report/diff")
+    async def report_diff(request: Request, v: int):
+        """What changed in version `v` compared with the one before it, section by section."""
+        import difflib
+
+        rs = rt_of(request).report_store()
+        rows = await run_in_threadpool(state.versions, rs, 50)
+        row = next((r for r in rows if r["version"] == v), None)
+        if row is None:
+            raise HTTPException(404, "no such version")
+        idx = rows.index(row)
+        if idx + 1 >= len(rows):
+            return {"version": v, "first": True, "sections": []}
+        prev = rows[idx + 1]
+        new_c, old_c = row["summary"].get("content"), prev["summary"].get("content")
+        out = []
+        for key in row["summary"].get("changed", []):
+            if key == "cover":
+                out.append({"key": key, "title": "Cover page", "text": None})
+                continue
+            title = next((x["title"] for x in row["summary"].get("sections", []) if x["key"] == key), key)
+            page = row["summary"].get("section_pages", {}).get(key)
+            if new_c is None or old_c is None:
+                out.append({"key": key, "title": title, "page": page, "text": None})
+                continue
+            a = (old_c.get(key) or {}).get("body", "").split()[:3000]
+            b = (new_c.get(key) or {}).get("body", "").split()[:3000]
+            if a == b:
+                out.append({"key": key, "title": title, "page": page, "text": [], "tables": True})
+                continue
+            ops = []
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+                if tag == "equal":
+                    ops.append(["eq", " ".join(a[i1:i2])])
+                else:
+                    if i2 > i1:
+                        ops.append(["del", " ".join(a[i1:i2])])
+                    if j2 > j1:
+                        ops.append(["ins", " ".join(b[j1:j2])])
+            out.append({"key": key, "title": title, "page": page, "text": ops})
+        return {"version": v, "first": False, "against": prev["version"], "sections": out}
 
     @app.get("/api/report/page/{n}.png")
     async def report_page(request: Request, n: int, v: int | None = None, scale: float = 1.6):

@@ -95,7 +95,9 @@ def build(rt) -> dict:
         "run": ({k: run[k] for k in ("id", "kind", "status", "error", "created_at")} if run else None),
         "questions": questions,
         "coverage": [c.as_dict() for c in cov],
-        "unplaced": [p for p in paths if ws_sync.slot_for_path(p) is None and not p.casefold().startswith("branding/")],
+        "unplaced": [p for p in paths if ws_sync.slot_for_path(p) is None
+                     and not p.casefold().startswith(("branding/", ws_sync.UPLOADS.casefold()))],
+        "attachments": [p[len(ws_sync.UPLOADS):] for p in paths if p.startswith(ws_sync.UPLOADS)],
         "pending": {"count": len(rt._pending.paths), "sections": ws_sync.affected_sections(rt._pending.paths)}
         if pending else None,
         "version": version,

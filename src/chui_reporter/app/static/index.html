@@ -36,8 +36,16 @@
       </div>
 
       <form id="composer" class="composer" autocomplete="off">
-        <input id="say" type="text" maxlength="2000" placeholder="Ask for a change…" aria-label="Message the agent">
-        <button type="submit" aria-label="Send" disabled></button>
+        <div class="cbox">
+          <div id="chips" class="chips" hidden></div>
+          <textarea id="say" rows="1" maxlength="2000" placeholder="Ask for a change…" aria-label="Message the agent"></textarea>
+          <div class="cbar">
+            <button type="button" id="attach" class="attach" aria-label="Attach files" title="Attach files (PDF, Excel, Word, CSV, text, images)"></button>
+            <span id="hint" class="hint">Enter to send · Shift+Enter for a new line</span>
+            <button type="submit" id="send" class="send" data-mode="idle" aria-label="Send"></button>
+          </div>
+          <input id="file" type="file" multiple hidden accept=".pdf,.xlsx,.xlsm,.xls,.docx,.csv,.txt,.md,.json,.png,.jpg,.jpeg,.webp,.gif">
+        </div>
       </form>
     </aside>
 

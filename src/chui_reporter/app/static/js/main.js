@@ -1,13 +1,14 @@
 import { get, post, setAuthHandler } from './api.js';
 import { mountActivity } from './activity.js';
 import * as folder from './folder.js';
+import { mountComposer } from './composer.js';
 import { mountHero } from './hero.js';
 import { start } from './live.js';
 import { mountMenu } from './menu.js';
 import { mountNotes } from './notes.js';
 import { mountSources } from './sources.js';
 import { mountViewer } from './viewer.js';
-import { $, $$, svg, toast } from './util.js';
+import { $, $$, toast } from './util.js';
 
 let started = false;
 
@@ -50,25 +51,6 @@ tabs.addEventListener('keydown', (e) => {
 });
 addEventListener('resize', moveInk);
 
-// ---- composer: the one free-text control -----------------------------------------------------
-const form = $('#composer'), say = $('#say'), send = form.querySelector('button');
-send.append(svg('M12 19V5M6 11l6-6 6 6', { size: 15, stroke: 2 }));
-say.addEventListener('input', () => { send.disabled = !say.value.trim(); });
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = say.value.trim();
-  if (!text) return;
-  send.disabled = true;
-  try {
-    const r = await post('/api/steer', { text });
-    if (r.ok === false) { toast(r.reason === 'no_report' ? 'There is no report yet to change. Build it first.' : 'That could not be sent.', 'warn'); send.disabled = false; }
-    else { say.value = ''; selectTab('activity', { animate: false }); }
-  } catch (ex) { toast(ex.message, 'bad'); send.disabled = false; }
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) { e.preventDefault(); say.focus(); }
-});
-
 // ---- mobile pane switch --------------------------------------------------------------------------
 $('#switch').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -86,6 +68,7 @@ async function boot() {
     mountSources($('#panel-sources'), $('#count-sources'));
     mountNotes($('#panel-notes'), $('#count-notes'));
     mountViewer($('#viewer'));
+    mountComposer();
     mountMenu({ button: $('#period'), menu: $('#menu'), onSignOut: async () => { await post('/api/logout'); location.reload(); } });
     await start();
     await folder.init();

@@ -77,7 +77,48 @@ def list_sources() -> str:
             out.append(f"    {f}")
         if len(files) > 12:
             out.append(f"    ... and {len(files) - 12} more")
+    attached = sorted(p for p in paths if p.startswith("Uploads/"))
+    if attached:
+        out.append("Attached by the user in the conversation (read them if the user's message refers to them):")
+        out.extend(f"    {f}" for f in attached[:20])
     return "\n".join(out)
+
+
+@tool
+def look_at_image(file_name: str, question: str = "Describe what this shows.") -> str:
+    """Look at an image the user attached (PNG, JPG, WEBP, GIF) and answer a question about it.
+
+    Use it for layout, design and qualitative guidance (a screenshot of a problem, a sketch of what
+    they want, a photograph). Figures that appear only in an image CANNOT be recorded in the fact
+    ledger or used in the report, because nothing can verify them: if the user wants numbers from an
+    image, ask for the source document instead."""
+    import base64
+    import io
+
+    from langchain_core.messages import HumanMessage
+
+    from PIL import Image
+
+    from .llm import get_llm
+
+    try:
+        path = _resolve_typed(file_name, (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+    except FileNotFoundError as exc:
+        return f"ERROR: {exc}"
+    if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return f"ERROR: {path.name} is not an image; use read_pdf, read_text or the excel tools."
+    try:
+        img = Image.open(path).convert("RGB")
+        img.thumbnail((1600, 1600))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=85)
+        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        reply = get_llm().invoke([HumanMessage(content=[
+            {"type": "text", "text": question[:600]}, {"type": "image_url", "image_url": {"url": url}}])])
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: could not look at {path.name}: {type(exc).__name__}: {exc}"
+    return (f"[{path.name}] {reply.content}\n(Figures read from an image are not verifiable and must not "
+            f"be recorded or used in the report.)")
 
 
 @tool
@@ -901,6 +942,7 @@ ALL_TOOLS = [
     ask_user,
     request_sources,
     read_text,
+    look_at_image,
     read_pdf,
     excel_sheets,
     excel_find_value,

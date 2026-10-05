@@ -48,6 +48,8 @@ export function mountSources(root, tabCount) {
       group('needed', 'Needed', needed) || '',
       group('ready', 'Provided', ready) || '',
       group('optional', 'Optional', optional) || '',
+      S.attachments?.length ? h('div', { class: 'group' }, h('h3', {}, 'Attached by you'),
+        h('ul', { class: 'slot files', style: { padding: '6px 0 12px' } }, S.attachments.map((n) => h('li', {}, n)))) : '',
       S.unplaced?.length ? h('div', { class: 'group' }, h('h3', {}, 'Not recognised'),
         h('p', { class: 'small', style: { margin: '6px 0 8px' } }, 'These files are in your folder, but no part of the report uses them.'),
         h('ul', { class: 'slot files', style: { padding: '0 0 12px' } }, S.unplaced.slice(0, 20).map((p) => h('li', {}, p)))) : '');

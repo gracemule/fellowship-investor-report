@@ -213,3 +213,33 @@ def test_repeating_the_same_call_is_interrupted_with_guidance(store):
     assert rt.execute(rid) == "done"
     seen = " ".join(str(m.content) for batch in llm.seen for m in batch)
     assert "same arguments" in seen
+
+
+def test_a_message_that_arrives_after_the_last_step_is_still_delivered(store):
+    """The agent can finish its turn between two of the user's keystrokes. A steer queued then used to
+    be dropped silently when the run ended."""
+    rt, llm = _runtime(store, list(HAPPY) + [call("render_it", {}, "d"), call("look_it", {}, "e")])
+    rid = rt._create("build", "Build it")
+    real = rt._segment
+    sent = {"done": False}
+
+    def segment(*a, **k):
+        out = real(*a, **k)
+        if not sent["done"] and out[0] == "finished":
+            sent["done"] = True
+            rt.steer("One more thing: keep it short.")          # arrives just after the agent finished
+        return out
+
+    rt._segment = segment
+    assert rt.execute(rid) == "done"
+    seen = " ".join(str(m.content) for batch in llm.seen for m in batch)
+    assert "keep it short" in seen
+    assert [e["detail"]["id"] for e in _events(store, "steer.applied")] == [_events(store, "steer")[0]["detail"]["id"]]
+
+
+def test_a_queued_message_is_reported_if_the_run_ends_without_delivering_it(store):
+    rt, _ = _runtime(store, [_Fail("bad key", 401)])
+    rid = rt._create("build", "Build it")
+    rt._steer.append({"id": "zz", "text": "late note"})
+    assert rt.execute(rid) == "failed"
+    assert [e["detail"]["id"] for e in _events(store, "steer.dropped")] == ["zz"]

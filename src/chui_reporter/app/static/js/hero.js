@@ -34,13 +34,12 @@ function questionView(q, S) {
       needsList(slots),
       h('p', { class: 'detail faint' }, model.folder.name
         ? `Add ${slots.length > 1 ? 'them' : 'it'} to “${model.folder.name}”. The agent carries on by itself when ${slots.length > 1 ? 'they appear' : 'it appears'}.`
-        : 'Choose your folder, then add them there.'),
+        : 'Choose your folder, or attach them in the box below.'),
       h('div', { class: 'actions' },
         model.folder.name ? link('Check the folder now', () => folder.checkNow()) : primary('Choose folder', pickOrReconnect),
         link('Continue without', () => post(`/api/questions/${q.id}/answer`, { skip: true }))),
     ] };
   }
-  const input = h('input', { type: 'text', placeholder: 'Or type an answer…', 'aria-label': 'Your answer', maxlength: 2000 });
   const send = (a) => run(() => post(`/api/questions/${q.id}/answer`, { answer: a }));
   return { key: 'q:' + q.id, nodes: [
     eyebrow('A question for you', 'ask'),
@@ -48,10 +47,9 @@ function questionView(q, S) {
     q.why && h('p', { class: 'detail' }, q.why),
     (q.options || []).length ? h('div', { class: 'choices' }, q.options.map((o) =>
       h('button', { class: 'choice', type: 'button', onclick: () => send(o) }, h('span', {}, o), svg(ICON.arrow, { size: 16 })))) : null,
-    h('form', { class: 'free', onsubmit: (e) => { e.preventDefault(); if (input.value.trim()) send(input.value.trim()); } },
-      input, h('button', { type: 'submit' }, 'Send')),
+    h('p', { class: 'detail faint' }, (q.options || []).length ? 'Or type your own answer in the box below.' : 'Type your answer in the box below.'),
     h('div', { class: 'actions' }, link('Decide for me', () => post(`/api/questions/${q.id}/answer`, { skip: true }))),
-  ], focus: input };
+  ] };
 }
 
 function syncView() {
@@ -78,8 +76,7 @@ function statusView(S) {
   const tone = { working: 'working', current: 'ok', attention: 'bad', waiting_user: 'ask', waiting_data: 'ask', stale: 'ask', ready: 'ask' }[st.phase] || '';
   const eb = offline ? 'Reconnecting' : { empty: 'Get started', needs_sources: 'Almost there', ready: 'Ready', working: 'Working',
     stale: 'Folder changed', attention: 'Needs attention', current: 'Up to date', waiting_data: 'Waiting', waiting_user: 'Waiting' }[st.phase] || '';
-  const stop = st.phase === 'working' ? link('Stop', () => post('/api/run/stop')) : null;
-  const nodes = [eyebrow(eb, offline ? 'bad' : tone, stop), h('h1', { class: 'headline' }, st.headline)];
+  const nodes = [eyebrow(eb, offline ? 'bad' : tone), h('h1', { class: 'headline' }, st.headline)];
   let detail = st.detail;
   if (st.phase === 'empty' && !f.supported) detail += ' Chrome or Edge keep it connected for you; here you will need to choose it again to check for changes.';
   if (st.phase === 'empty' && f.needsPermission) detail = `Reconnect to “${f.name}” so the agent can read it again.`;
@@ -99,7 +96,7 @@ function statusView(S) {
   if (a?.id === 'pick') {
     if (!connected || st.phase === 'empty') actions.append(primary(f.needsPermission ? `Reconnect to ${f.name}` : 'Choose folder', pickOrReconnect));
     else actions.append(link('Check the folder now', () => folder.checkNow()));
-  } else if (a?.id === 'stop') { /* shown beside the status label */ }
+  } else if (a?.id === 'stop') { /* the send button becomes Stop while the agent works */ }
   else if (a) actions.append(primary(a.label, () => post(a.id === 'resume' ? '/api/run/resume' : '/api/run', {})));
   if (st.phase === 'current' && connected) actions.append(link('Check the folder now', () => folder.checkNow()));
   if (f.needsPermission && st.phase !== 'empty') actions.append(link(`Reconnect to ${f.name}`, () => folder.reconnect()));

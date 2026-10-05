@@ -72,7 +72,8 @@ def snapshot(store: Store, run_id: str | None = None) -> dict | None:
     pdf_bytes = pdf_path.read_bytes()
     summary = {"hashes": hashes, "changed": changed, "section_pages": sp, "headings": lr.get("headings", {}),
                "sizes": page_sizes(pdf_bytes),
-               "sections": [{"key": s["key"], "title": s["title"]} for s in sections], "run_id": run_id}
+               "sections": [{"key": s["key"], "title": s["title"]} for s in sections], "run_id": run_id,
+               "content": {s["key"]: {"title": s["title"], "body": s["body"] or ""} for s in sections}}
     v = state.save_version(store, pages, summary, pdf_bytes,
                            docx.read_bytes() if docx.exists() else None,
                            notes.read_text() if notes and notes.exists() else None)

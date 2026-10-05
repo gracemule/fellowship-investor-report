@@ -16,6 +16,7 @@ export function mountActivity(root) {
   feed.append(empty);
 
   const runs = new Map();
+  const steerState = new Map();
   let last = null, stick = true, hydrating = true;
   let programmaticUntil = 0;
   const nearBottom = () => root.scrollHeight - root.scrollTop - root.clientHeight < 90;
@@ -122,7 +123,24 @@ export function mountActivity(root) {
       }
       case 'question': line(runOf(), ev.label, { time: ev.created_at, small: d.why || undefined }); break;
       case 'question.answered': line(runOf(), 'You answered: ' + ev.label.replace(/^SKIP:.*/, 'Decide for me'), { time: ev.created_at, cls: 'moment you' }); break;
-      case 'steer': line(runOf(), h('div', { class: 'quote' }, ev.label), { time: ev.created_at, cls: 'moment you' }); break;
+      case 'steer': {
+        const state = h('small', { class: 'state' }, d.queued ? 'Queued · applies after the current step' : 'Started an update for this');
+        steerState.set(d.id, state);
+        const atts = (d.attachments || []).length ? h('div', { class: 'chips inline' }, d.attachments.map((a) =>
+          h('span', { class: 'chip' }, svg(ICON.doc, { size: 13 }), h('span', { class: 'nm' }, a.name)))) : null;
+        line(runOf(), [h('div', { class: 'quote' }, ev.label), atts, state], { time: ev.created_at, cls: 'moment you' });
+        break;
+      }
+      case 'steer.dropped': {
+        const st = steerState.get(d.id);
+        if (st) { st.textContent = 'Not delivered: the run ended first. Send it again.'; st.dataset.done = '0'; }
+        break;
+      }
+      case 'steer.applied': {
+        const st = steerState.get(d.id);
+        if (st) { st.textContent = `Applied at ${clock(ev.created_at)}`; st.dataset.done = '1'; }
+        break;
+      }
       case 'retry': {
         const text = ev.label.replace(/Trying again in \d+ seconds\./, '');
         const target = new Date(ev.created_at).getTime() + (d.wait || 0) * 1000;

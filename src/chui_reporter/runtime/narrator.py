@@ -11,7 +11,7 @@ from __future__ import annotations
 CHAPTERS = ("Reading sources", "Recording figures", "Building tables", "Writing", "Checking and rendering")
 
 _C = {
-    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "excel_sheets": CHAPTERS[0],
+    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "look_at_image": CHAPTERS[0], "excel_sheets": CHAPTERS[0],
     "excel_find_value": CHAPTERS[0], "excel_dump_region": CHAPTERS[0], "portfolio_valuations": CHAPTERS[0],
     "fund_capital_position": CHAPTERS[0], "financial_statements": CHAPTERS[0], "prior_report_table": CHAPTERS[0],
     "report_save_facts": CHAPTERS[1], "report_derive_fact": CHAPTERS[1], "ledger_search": CHAPTERS[1],
@@ -41,6 +41,7 @@ def describe_call(name: str, args: dict) -> tuple[str, str]:
         "list_sources": "Checking which source documents are available",
         "read_pdf": f"Reading {_file(a) or 'a PDF'}",
         "read_text": f"Reading {_file(a) or 'a document'}",
+        "look_at_image": f"Looking at {_file(a) or 'an image'}",
         "excel_sheets": f"Opening {_file(a) or 'a workbook'}",
         "excel_find_value": f"Looking up “{_s(a.get('label'), 40)}” in {_file(a) or 'a workbook'}",
         "excel_dump_region": f"Reading the {_s(a.get('sheet'), 40)} sheet of {_file(a) or 'a workbook'}",
