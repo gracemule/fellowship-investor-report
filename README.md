@@ -64,7 +64,7 @@ against the stored page, exactly as workbook cells and PDF pages are. A figure s
 
 ## PDF conversion
 
-Word to PDF runs in LibreOffice on the server, or through iLoveAPI (`CHUI_PDF_CONVERTER=auto|libreoffice|iloveapi`).
+Word to PDF runs in LibreOffice on the server, in LibreOffice as a service of its own (`chui-converter`, the production setup), or through iLoveAPI (`CHUI_PDF_CONVERTER=auto|libreoffice|remote|iloveapi`).
 LibreOffice is the reference: private and font-exact, but it needs about 400 MB while converting. The hosted converter
 needs no installation and suits a small host, with three caveats the code handles explicitly: the service lists a fixed
 font set, so the brand font is embedded in a temporary copy sent for conversion (and `python -m
@@ -159,8 +159,8 @@ See `.env.example`. The essentials: `DATABASE_URL`, `CHUI_ACCESS_PASSWORD`, one 
 
 ## Deploying
 
-`render.yaml` describes one Docker web service (the agent runs inside it as a worker thread). Keep it at a **single
-instance**. See `docs/DEPLOY-HANDOFF.md`.
+Two free Render web services (`render.yaml`: the app and the agent, which runs inside it as a worker thread;
+`render.converter.yaml`: LibreOffice as a service of its own), each in its own workspace. Keep each at a **single instance**. See `docs/DEPLOYMENT.md`.
 
 ## Layout
 

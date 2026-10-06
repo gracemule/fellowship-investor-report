@@ -30,3 +30,6 @@ htmlcov/
 
 # Tests that open the real LP source documents (or carry their figures) stay on the machine that has them.
 tests/private/
+
+# Per-service secret files prepared for pasting into Render (never commit)
+.render-env/
