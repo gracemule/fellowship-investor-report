@@ -48,9 +48,18 @@ Non-secret settings are already on the services. Secrets live only in the Render
 `CHUI_ENV=production` are set on the app. In production the idle server checks the database for orphaned runs hourly
 (`CHUI_JANITOR_SECONDS`), so Neon can scale to zero between uses.
 
+## Reading the logs (no secrets in them)
+
+* The app logs one line at start-up, `settings seen by this server: ...`, naming each setting and whether it is set or empty (and
+  its length), never its value. A mistyped name or an empty box shows up there at once.
+* Each service logs the converter token as a length and an 8-character fingerprint. The two fingerprints must be equal; if they
+  differ, the converter answers 401 and its log says what it was shown (length and fingerprint only).
+* A token pasted with quotes, spaces or the whole `NAME=value` line is accepted.
+
 ## Checks after a change
 
-1. `curl -I https://chui-converter.onrender.com/healthz` and the same for the app: 200.
+1. `curl -I https://chui-converter.onrender.com/healthz` and the same for the app: 200 (done 6 Oct 2026: both 200; `/readyz`
+   reports the database reachable from Frankfurt; `/api/state` without signing in is 401).
 2. `curl https://chui-converter.onrender.com/selftest`: `ok: true`, with the time and LibreOffice's peak memory (rate limited).
 3. Sign in, start a run, and confirm the Sources tab shows "LibreOffice service". Then
    `python -m chui_reporter.render.check_converter` (with `CHUI_PDF_CONVERTER=remote` and the two converter settings) must
