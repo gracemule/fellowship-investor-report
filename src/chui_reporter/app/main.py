@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from dotenv import find_dotenv, load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -76,6 +77,11 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
                                     "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
                                     "font-src 'self'; connect-src 'self'; frame-ancestors 'none'")
         return resp
+
+    # Compress the text responses (state, history, scripts). Event streams, images and documents are excluded: the first
+    # must not be buffered, the rest are already compressed.
+    app.add_middleware(GZipMiddleware, minimum_size=1200, exclude_content_types=DEFAULT_EXCLUDED_CONTENT_TYPES + (
+        "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
 
     # ---------------------------------------------------------------- public
 

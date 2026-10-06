@@ -7,7 +7,7 @@
 import { post } from './api.js';
 import * as folder from './folder.js';
 import { model, subscribe } from './live.js';
-import { $, ICON, ago, clear, h, list, plural, svg, toast } from './util.js';
+import { $, ICON, ago, clear, h, list, plural, svg, tok, toast } from './util.js';
 
 const SYNCING = new Set(['scanning', 'hashing', 'uploading', 'committing']);
 
@@ -63,6 +63,17 @@ function syncView() {
     h('div', { class: 'bar' + (p && p.total ? '' : ' indet'), id: 'hero-bar' }, h('i', { style: { width: p && p.total ? `${(p.done / p.total) * 100}%` : '' } })),
   ] };
 }
+// What the model has actually read, as the provider counted it (not an estimate).
+const ctxText = () => {
+  const u = model.state?.run?.usage;
+  if (!u || !u.last_prompt) return '';
+  const parts = [`${tok(u.last_prompt)} tokens in context`];
+  if (u.window) parts[0] = `Context ${Math.max(1, Math.round((u.last_prompt / u.window) * 100))}% · ${tok(u.last_prompt)} of ${tok(u.window)} tokens`;
+  if (u.input) parts.push(`${Math.round(((u.cached || 0) / u.input) * 100)}% cached`);
+  if (u.sub && (u.sub.input || u.sub.output)) parts.push(`researchers ${tok(u.sub.input + u.sub.output)}`);
+  return parts.join(' · ');
+};
+
 const syncDetail = () => {
   const p = model.folder.progress;
   if (!p) return model.folder.name ? `“${model.folder.name}”` : '';
@@ -88,7 +99,7 @@ function statusView(S) {
     nodes.push(needsList((S.coverage || []).filter((c) => c.state === 'missing')));
     if (f.name && !f.needsPermission) nodes.push(h('p', { class: 'detail faint' }, `Add them to “${f.name}” and they will be picked up on their own.`));
   }
-  if (st.phase === 'working') nodes.push(h('div', { class: 'bar indet' }, h('i')));
+  if (st.phase === 'working') nodes.push(h('div', { class: 'bar indet' }, h('i')), h('p', { class: 'ctx', id: 'hero-ctx' }, ctxText()));
 
   const actions = h('div', { class: 'actions' });
   const a = st.action;
@@ -119,6 +130,8 @@ export function mountHero(root) {
     if (view.focus && document.activeElement === document.body) view.focus.focus({ preventScroll: true });
   };
   const patchProgress = () => {
+    const ctx = $('#hero-ctx', root);
+    if (ctx) ctx.textContent = ctxText();
     if (!SYNCING.has(model.folder.phase)) return;
     const d = $('#hero-detail', root), b = $('#hero-bar i', root), p = model.folder.progress;
     if (d) d.textContent = syncDetail();

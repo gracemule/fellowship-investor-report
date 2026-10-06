@@ -15,7 +15,7 @@ from tests.fakes import ScriptedChat, call
 def _agent(script, saver):
     T.reset_questions()
     llm = ScriptedChat(script=script, seen=[])
-    return build_agent(saver, llm=llm, tools=[T.ask_user, T.request_sources]), llm
+    return build_agent(saver, llm=llm, tools=[T.ask_user, T.request_sources], breakpoints=False), llm
 
 
 def test_ask_user_pauses_then_resumes_with_the_answer():

@@ -121,75 +121,84 @@ def look_at_image(file_name: str, question: str = "Describe what this shows.") -
             f"be recorded or used in the report.)")
 
 
-_ROUTER = None
+# --------------------------------------------------------------------------
+# Delegation: bulky research is done by subagents in contexts of their own
+# --------------------------------------------------------------------------
 
 
-def get_router():
-    """The web-search router for the current store (built on first use, rebuilt if the store changes)."""
-    global _ROUTER
-    from ..services.search import SearchRouter
+def _agent_context():
+    """The subagent context the runner set for this run; a plain one when the tools are used from the command line."""
+    from ..agents import engine
 
-    if _ROUTER is None or _ROUTER.store is not get_store():
-        _ROUTER = SearchRouter(get_store())
-    return _ROUTER
+    ctx = engine.get_context()
+    if ctx is None:
+        from .llm import get_llm
 
-
-def set_router(router) -> None:
-    global _ROUTER
-    _ROUTER = router
+        st = get_store()
+        ctx = engine.Context(store=st, report_id=st.report_id, llm_factory=lambda: get_llm(thinking=False))
+    return ctx
 
 
 @tool
-def web_search(query: str, max_results: int = 6, topic: str = "general", days: int = 0,
-               only_sites: str = "") -> str:
-    """Search the web. Returns titles, addresses, a short extract and a date where known.
+def research_macro(countries: list[str], period: str = "", indicators: list[str] | None = None) -> str:
+    """Have researchers source the macro snapshot (section 3.1) for these countries.
 
-    Use it to FIND pages (for example the central bank's or the national statistics office's page for a
-    country's latest GDP growth, inflation, policy rate or exchange rate). A search result is a lead, not
-    evidence: you cannot record a figure from it. Open the page with web_fetch and quote it there.
+    One researcher per country works in parallel, each in a context of its own: it searches the web, reads the
+    central bank's and statistics office's own pages, and brings back GDP growth, inflation, the policy rate and the
+    exchange rate with a verified quotation for each. You receive only the verified figures and the gaps; the
+    searching and page text never enter this conversation, so do not search yourself (you cannot). The figures
+    are recorded in the fact ledger. Then call build_macro_table and write the prose from the figures returned here.
 
-    topic: "general" or "news". days: only results from the last N days (0 = any).
-    only_sites: comma-separated domains to restrict to, e.g. "centralbank.go.ke,knbs.or.ke".
-    Credit is limited and shared: make each query specific, and do not repeat a query."""
-    from ..services.search import NoSearchAvailable
+    countries: the countries the Fund invests in (take them from the portfolio tables), e.g. ["Kenya", "Nigeria"].
+    period: leave empty for the report's own quarter.
+    indicators: leave empty for all four (gdp_growth, inflation, policy_rate, fx_usd). To fill what is still missing
+    after a first pass, call again with only those countries and only those indicators: the new figures join the
+    earlier ones in the same table. Do this at most once; a figure still missing after that is a gap."""
+    from .. import period as pr
+    from ..agents import macro
 
-    domains = [d.strip() for d in only_sites.split(",") if d.strip()]
+    p = pr.Period.parse(period) if period.strip() else pr.current()
     try:
-        res = get_router().search(query, max_results=max_results, topic=topic, days=days, include_domains=domains or None)
-    except NoSearchAvailable as exc:
-        return ("ERROR: web search is not available right now (" + str(exc) + "). If the figures are needed, call "
-                "request_sources(['macro']) so the user can supply them, and carry on without them otherwise.")
-    if not res.hits:
-        return f"[{res.provider}] no results for {query!r}. Try different words or a named source."
-    lines = [f"[{res.provider}] {len(res.hits)} results for {query!r}" + (f"  ({'; '.join(res.notes)})" if res.notes else "")]
-    for h in res.hits:
-        lines.append(f"- {h.title}\n  {h.url}" + (f"  ({h.published})" if h.published else "") + f"\n  {h.snippet[:300]}")
+        return macro.research_macro(_agent_context(), countries, p, indicators)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: the research could not be run: {exc}"
+
+
+@tool
+def build_macro_table(countries: list[str], section_key: str = "3.1") -> str:
+    """Lay out the macro table from the figures the researchers verified (call research_macro first).
+
+    One row per country, one column per indicator, each cell the figure and the period it describes, and a dash where
+    nothing verified. The table is built by code from the ledger, so no figure in it is retyped."""
+    from ..agents import macro
+
+    return macro.build_table(get_store(), get_store().report_id, countries, section_key)
+
+
+@tool
+def delegate_research(question: str, label: str = "") -> str:
+    """Hand a research question to a researcher with a context of its own, and get back verified findings.
+
+    Use it for anything that needs reading the web: it searches, opens publishers' pages and returns the figures it
+    could verify (each with its source), plus what it could not find. You cannot search the web yourself, which is
+    deliberate: the search results would fill this conversation. Ask one focused question per call."""
+    from ..agents.research import research_one
+
+    question = question.strip()
+    if len(question) < 15:
+        return "ERROR: describe what to find, which period it should cover, and what unit it should be in."
+    ctx = _agent_context()
+    task = (question + "\n\nReturn every figure you rely on as a claim (key, label, value, unit, as_of, source_url, quote). "
+            "If something cannot be found and verified, list it under gaps.")
+    out, rec = research_one(ctx, task, label=(label or question)[:48], group="research")
+    if out.status != "done":
+        return f"The researcher did not finish ({out.error or out.status}). Try again with a narrower question."
+    lines = [f"Researcher's summary: {out.result.summary}" if out.result and out.result.summary else "Researcher finished."]
+    lines += [f"- {v['label']} = {v['value']} {v['unit']} (as of {v['as_of']}) — {v['url']}" for v in rec["verified"].values()]
+    lines += [f"- NOT FOUND: {k}: {why[:140]}" for k, why in rec["gaps"].items()]
+    lines.append(f"(The researcher used {out.usage.get('input', 0) + out.usage.get('output', 0):,} tokens; none is in this conversation. "
+                 f"Verified figures are recorded in the fact ledger.)")
     return "\n".join(lines)
-
-
-@tool
-def web_fetch(url: str, find: str = "", max_chars: int = 6000) -> str:
-    """Read a web page (HTML, PDF, JSON or text) and keep it as evidence.
-
-    This is how a web figure becomes usable: after fetching, record the figure with report_save_facts
-    using source_file = this exact address and source_cell = the exact sentence or table row from the page
-    that contains the figure (copied from the text returned here), plus as_of = the period the figure
-    describes. `find` returns only the passages around that word or number (use it on long pages).
-    Pages are fetched by the server: private and internal addresses are refused."""
-    from ..services.web import FetchError, fetch, windows
-
-    try:
-        page = fetch(get_store(), url, router=get_router())
-    except FetchError as exc:
-        return f"ERROR: {exc}"
-    text = page["text"]
-    if find:
-        found = windows(text, find)
-        body = ("\n---\n".join(found) if found else f"{find!r} does not appear on the page.")
-    else:
-        body = text[: max(500, min(int(max_chars), 12000))]
-    more = "" if find or len(text) <= len(body) else f"\n[... {len(text) - len(body):,} more characters; use find= to jump to a figure]"
-    return f"[{page['title'] or page['url']}]  {page['url']}  (via {page['via']})\n{body}{more}"
 
 
 @tool
@@ -1025,8 +1034,9 @@ ALL_TOOLS = [
     request_sources,
     read_text,
     look_at_image,
-    web_search,
-    web_fetch,
+    research_macro,
+    build_macro_table,
+    delegate_research,
     read_pdf,
     excel_sheets,
     excel_find_value,

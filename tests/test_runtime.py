@@ -16,7 +16,7 @@ from chui_reporter.agent import tools as T
 from chui_reporter.agent.graph import build_agent
 from chui_reporter.runtime import state
 from chui_reporter.runtime.runner import Runtime
-from tests.fakes import ScriptedChat, call
+from tests.fakes import ScriptedChat, call, calls
 
 
 class _Fail(Exception):
@@ -238,8 +238,69 @@ def test_a_message_that_arrives_after_the_last_step_is_still_delivered(store):
 
 
 def test_a_queued_message_is_reported_if_the_run_ends_without_delivering_it(store):
-    rt, _ = _runtime(store, [_Fail("bad key", 401)])
+    """A message that arrives after the last pause, on a run that then fails for good, has nowhere to go:
+    that is said in the feed instead of being lost."""
+    from chui_reporter.runtime.runner import RunFailed
+
+    rt, _ = _runtime(store, [])
     rid = rt._create("build", "Build it")
-    rt._steer.append({"id": "zz", "text": "late note"})
+
+    def segment(*a, **k):
+        rt._steer.append({"id": "zz", "text": "late note"})
+        raise RunFailed("The model is unavailable.", "other")
+
+    rt._segment = segment
     assert rt.execute(rid) == "failed"
     assert [e["detail"]["id"] for e in _events(store, "steer.dropped")] == ["zz"]
+
+
+def test_a_message_queued_before_the_first_call_goes_into_the_saved_conversation(store):
+    rt, llm = _runtime(store, list(HAPPY) + [call("render_it", {}, "d"), call("look_it", {}, "e")])
+    rid = rt._create("build", "Build it")
+    rt._steer.append({"id": "zz", "text": "Keep it short."})
+    assert rt.execute(rid) == "done"
+    first = " ".join(str(m.content) for m in llm.seen[0])
+    assert "Keep it short." in first
+    assert [e["detail"]["id"] for e in _events(store, "steer.applied")] == ["zz"]
+
+
+def test_each_runs_real_token_counts_are_added_up_and_saved(store):
+    u1 = {"input_tokens": 40_000, "output_tokens": 300, "total_tokens": 40_300, "input_token_details": {"cache_read": 39_000}}
+    u2 = {"input_tokens": 41_000, "output_tokens": 200, "total_tokens": 41_200, "input_token_details": {"cache_read": 40_500}}
+    rt, _ = _runtime(store, [call("write_it", {"key": "1.1", "text": "In Q2 2026, the Fund grew."}, "a", usage=u1),
+                             call("render_it", {}, "b", usage=u2), call("look_it", {}, "c")])
+    rid = rt._create("build", "Build it")
+    assert rt.execute(rid) == "done"
+    usage = state.get_run(store, rid)["usage"]
+    assert usage["calls"] == 2 and usage["input"] == 81_000 and usage["output"] == 500
+    assert usage["cached"] == 79_500 and usage["last_prompt"] == 41_000
+
+
+def test_a_nudge_is_never_delivered_between_the_parallel_results_of_one_step(store):
+    """Found live: the loop guard's nudge arrived after the first of two parallel tool results, leaving the other call
+    unanswered, and the next model call was refused as an invalid conversation."""
+    pair = lambda i: calls(("render_it", {}, f"r{i}"), ("look_it", {}, f"l{i}"))     # noqa: E731
+    rt, llm = _runtime(store, [pair(0), pair(1), pair(2)] + list(HAPPY))
+    rid = rt._create("build", "Build it")
+    assert rt.execute(rid) == "done", state.get_run(store, rid)["error"]
+    assert "same arguments" in " ".join(str(m.content) for batch in llm.seen for m in batch)
+
+
+def test_a_steer_is_never_delivered_between_the_parallel_results_of_one_step(store):
+    rt, llm = _runtime(store, [calls(("render_it", {}, "a"), ("look_it", {}, "b")), calls(("write_it", {"key": "1.1", "text": "In Q2 2026, the Fund grew."}, "c"),
+                                                                                          ("render_it", {}, "d"))] + [call("look_it", {}, "e")])
+    rid = rt._create("build", "Build it")
+    rt.steer("Keep it short.")
+    assert rt.execute(rid) == "done", state.get_run(store, rid)["error"]
+
+
+def test_history_keeps_every_researcher_step_inside_the_window_without_counting_them(store):
+    for i in range(6):
+        state.emit(store, "step", f"main {i}", detail={})
+    for j in range(40):                                          # a researcher's steps: many, and nested in the feed
+        state.emit(store, "step", f"sub {j}", detail={"sub": "abc"})
+    state.emit(store, "step", "main 6", detail={})
+    ev = state.recent_events(store, 3)
+    assert [e["label"] for e in ev if not (e.get("detail") or {}).get("sub")] == ["main 4", "main 5", "main 6"]
+    assert sum(1 for e in ev if (e.get("detail") or {}).get("sub")) == 40, "a block of research is never cut in half"
+    assert sum(1 for e in ev if not (e.get("detail") or {}).get("sub")) == 3

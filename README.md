@@ -79,11 +79,32 @@ unchanged; and the unfinished report leaves your server for the conversion.
 | Rate limit, dropped connection, provider 5xx | Retry from the last checkpoint with exponential backoff and jitter, honouring `Retry-After`. Visible in the activity feed. |
 | Provider still down after the retry budget | Switches to `CHUI_FALLBACK_PROVIDER` if configured (e.g. DeepSeek → Anthropic); otherwise the run stops, resumable. |
 | Bad API key, empty balance, rejected request | Stops at once with a plain explanation. The work is saved; a button continues it. |
-| Conversation too long | `pre_model_hook` condenses old tool output and old exchanges. The agent's memory is the database (fact ledger, report, review notes), so nothing is lost. |
+| Conversation filling the model's context | Three layers, in the order the mature open-source agents use them. (1) Bulky work never enters the conversation: web research runs in subagents (below). (2) The model's real window is asked of the provider (`agent/limits.py`) and the provider's own token counts decide when to act: at half the window old tool results are replaced by a one-line stub (the agent can call the tool again), and only at 80% are old exchanges condensed into a brief, because rewriting old messages breaks the provider's prompt cache. (3) The agent's memory is the database (fact ledger, report, review notes), so nothing recorded is lost. The interface shows the real figures while the agent works. |
 | Process crash or redeploy mid-run | The run's heartbeat goes stale; the next process re-queues it and resumes from the last checkpoint. |
 | Model repeats itself | Loop guard interrupts with guidance; after repeated loops the run stops. |
 | Model ends its turn early | A completion check (rendered? pages inspected?) sends it back to work. |
 | User changes their mind mid-run | Steering and stop are applied at the next clean boundary (never between a tool call and its result). |
+
+## Context management and subagents
+
+The main agent builds the report; it does not do the reading. Anything that produces a lot of text (web search results, long
+pages) is delegated to a **subagent**: a short-lived worker with its own empty context, its own tools and a budget (`agents/`).
+It does its searching and reading, then returns one small structured result. Only that result enters the main conversation, so
+the main agent's context stays small: in a live macro refresh the researchers used about 1M tokens (90% of it served from the
+provider's cache) while the main conversation stayed around 15k.
+
+* **Workers, not authors.** A researcher returns claims (a figure, the page it came from, the exact sentence containing it).
+  Code, not the model, then re-reads the stored page and checks the sentence and the figure are really there
+  (`services/web.verify_web_claim`); only verified figures are recorded in the ledger. Unverified claims become gaps.
+  Figures for periods after the quarter end, and social media sources, are refused.
+* **Macros.** `research_macro` runs one researcher per country in parallel (`CHUI_SUBAGENT_PARALLEL`, default 3); `build_macro_table`
+  lays the table out from the ledger; the agent writes the prose from those figures only. `delegate_research` covers any other
+  question that needs the web. The main agent has no web tools of its own.
+* **Bounded and visible.** Each subagent has a step limit and a search/fetch budget; it retries transient failures with backoff; a stop
+  from the user reaches it; its work appears nested in the activity feed and its tokens are counted separately in the header.
+  `CHUI_SUBAGENT_MODEL` lets researchers run on a cheaper model than the main agent.
+* **Messages arrive between steps.** The graph pauses before every model call; that is the only moment steering, loop warnings
+  and stop take effect, so a saved conversation can never contain a tool call without its result.
 
 ## Safeguards on the numbers
 
@@ -137,7 +158,8 @@ instance**. See `docs/DEPLOY-HANDOFF.md`.
 
 ```
 src/chui_reporter/
-  agent/       tools, ledger, store, LangGraph graph, provider factory, deterministic table builders
+  agent/       tools, ledger, store, LangGraph graph, provider factory, real model limits, deterministic table builders
+  agents/      subagent engine (isolated context, budgets, verified claims) and the macro researchers
   runtime/     run manager, narrator, retries, loop guard, compaction, report versions, UI state
   workspace/   folder sync and the source-slot registry
   render/      numeric gate, lint, branded Word renderer, LibreOffice conversion, charts
@@ -148,7 +170,10 @@ src/chui_reporter/
 ## Known limits
 
 * The File System Access API is Chromium-only; elsewhere the folder must be re-selected to look for changes.
-* Macro indicators (country snapshot) are not collected automatically yet; the section is left out unless the
-  data is supplied in the `Macro and Context` folder.
+* Macro figures come from the central banks' and statistics offices' own pages. Sites that omit an intermediate certificate
+  are read the way a browser reads them (the chain is completed and still fully verified). Pages that sit behind a bot wall
+  (ANSTAT, Côte d'Ivoire) or draw their figures with JavaScript (rate tables at the CBN, SARB and BCEAO) cannot be read
+  without a real browser; those figures are left as dashes and listed as review notes rather than filled from a secondary source. Supplying the
+  data in the `Macro and Context` folder always wins.
 * The visual inspection by a vision model is good at gross layout and logo checks, unreliable on fine alignment.
 * Qualitative claims in prose cannot be verified mechanically; only figures are.

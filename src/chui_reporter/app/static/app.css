@@ -398,3 +398,20 @@ body:not(.booting) .viewer { animation: fadein .9s .1s ease both; }
 .svc-row > span:first-child { color: var(--ink); }
 .svc-row em { font-style: normal; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; margin-left: 8px; }
 .svc-row[data-state="exhausted"] > span:last-child, .svc-row[data-state="auth"] > span:last-child { color: var(--warn); }
+
+.ctx { margin: 10px 0 0; font-size: 12px; color: var(--muted); min-height: 1.2em; }
+
+/* subagents: work done in a context of its own, nested under the step that started it */
+.sub { margin: 6px 0 8px 4px; padding-left: 14px; border-left: 2px solid var(--rule); transition: border-color .3s; }
+.sub[data-s="running"] { border-left-color: var(--accent); }
+.sub[data-s="failed"] { border-left-color: var(--bad); }
+.sub-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 4px 0; text-align: left; font-size: 13.5px; color: var(--ink-2); }
+.sub-head:hover { color: var(--accent-ink); }
+.sub-title { font-weight: 500; color: var(--ink); }
+.sub-meta { flex: 1; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub-head .chev { color: var(--faint); transition: transform .3s var(--ease); transform: rotate(-90deg); flex: none; }
+.sub.open .sub-head .chev { transform: none; }
+.sub-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .4s var(--ease); }
+.sub.open .sub-body { grid-template-rows: 1fr; }
+.sub-body > div { overflow: hidden; min-height: 0; }
+.sub .steps { margin: 4px 0 6px 2px; }

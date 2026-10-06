@@ -95,10 +95,15 @@ def recent_events(store: Store, n: int = 120, ws: str = WS, *, session: str | No
     if session:
         where += " AND (session_id=%s" + (" OR session_id IS NULL" if include_unassigned else "") + ")"
         args.append(session)
+    # Researchers' own steps are nested under their block and can number in the hundreds for one macro refresh, so they do not
+    # count against `n`: the window is the last n events of the main agent, plus every researcher step inside that window.
+    sub_step = "(kind IN ('step','step.done') AND detail ? 'sub')"
     with store.conn() as c:
         rows = list(c.execute(
             f"SELECT id, run_id, kind, label, chapter, detail, created_at, session_id FROM {store._t('event')} "
-            f"WHERE {where} ORDER BY id DESC LIMIT %s", (*args, n)))
+            f"WHERE {where} AND id >= coalesce((SELECT min(id) FROM (SELECT id FROM {store._t('event')} WHERE {where} "
+            f"AND NOT {sub_step} ORDER BY id DESC LIMIT %s) w), 0) ORDER BY id DESC LIMIT %s",
+            (*args, *args, n, n + 1500)))
     return [_iso(r) for r in reversed(rows)]
 
 
@@ -141,7 +146,7 @@ def latest_run(store: Store, ws: str = WS) -> dict | None:
     return _iso(r) if r else None
 
 
-_RUN_FIELDS = {"status", "error", "worker", "attempts", "nudges", "instruction"}
+_RUN_FIELDS = {"status", "error", "worker", "attempts", "nudges", "instruction", "usage"}
 
 
 def update_run(store: Store, run_id: str, **fields: Any) -> None:
@@ -151,9 +156,10 @@ def update_run(store: Store, run_id: str, **fields: Any) -> None:
     if not fields:
         return
     sets = ", ".join(f"{k}=%s" for k in fields)
+    values = [Jsonb(v) if isinstance(v, dict) else v for v in fields.values()]
     with store.conn() as c:
         c.execute(f"UPDATE {store._t('run')} SET {sets}, updated_at=now(), heartbeat_at=now() WHERE id=%s",
-                  (*fields.values(), run_id))
+                  (*values, run_id))
 
 
 def touch(store: Store, run_id: str) -> None:

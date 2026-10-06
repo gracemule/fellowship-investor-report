@@ -3,7 +3,7 @@
 
 import { get } from './api.js';
 import { emit, model, subscribe } from './live.js';
-import { ICON, ago, clear, clock, h, list, md, plural, svg } from './util.js';
+import { ICON, ago, clear, clock, h, list, md, plural, svg, tok } from './util.js';
 
 const RUN_TITLES = { build: 'Building the report', update: 'Updating the report', steer: 'Applying your change',
                      resume: 'Continuing', recover: 'Continuing' };
@@ -19,6 +19,7 @@ export function mountActivity(root) {
 
   const runs = new Map();
   const steerState = new Map();
+  const subs = new Map();          // subagent id -> its block in the feed
   let last = null, stick = true, hydrating = true;
   let programmaticUntil = 0;
   const nearBottom = () => root.scrollHeight - root.scrollTop - root.clientHeight < 90;
@@ -90,6 +91,55 @@ export function mountActivity(root) {
     bar.textContent = open ? 'Show fewer' : `${older.length} earlier steps`;
   }
 
+  // ---- subagents: bulky work done in a context of its own, shown nested and collapsed once finished ----------
+  function startSub(ev) {
+    const r = ensureRun(ev.run_id, 'update', ev.created_at);
+    r.chapter = null;
+    const d = ev.detail || {};
+    const meta = h('span', { class: 'sub-meta' }, 'working…');
+    const body = h('div', { class: 'steps' });
+    const head = h('button', { class: 'sub-head', type: 'button', 'aria-expanded': 'true', onclick: () => toggleSub(entry) },
+      h('span', { class: 'dot', 'data-s': 'working' }), h('span', { class: 'sub-title' }, ev.label), meta, svg(ICON.chev, { size: 12, cls: 'chev' }));
+    const el = h('div', { class: 'sub open', 'data-s': 'running' }, head, h('div', { class: 'sub-body' }, h('div', {}, body)));
+    const entry = { el, head, body, meta, steps: new Map(), count: 0 };
+    subs.set(d.sub, entry);
+    r.inner.append(el); settle();
+  }
+  function toggleSub(entry) {
+    const open = entry.el.classList.toggle('open');
+    entry.head.setAttribute('aria-expanded', String(open));
+  }
+  function subStep(ev) {
+    const entry = subs.get(ev.detail.sub);
+    if (!entry) return;
+    const out = h('span', { class: 'out' });
+    const node = h('div', { class: 'step', 'data-s': 'running' }, h('div', {}, ev.label, out), h('span', { class: 't' }, clock(ev.created_at)));
+    entry.body.append(node);
+    entry.steps.set(ev.detail.call, { node, out });
+    entry.count += 1;
+    entry.meta.textContent = `${entry.count} step${entry.count === 1 ? '' : 's'}…`;
+    settle();
+  }
+  function subStepDone(ev) {
+    const s = subs.get(ev.detail.sub)?.steps.get(ev.detail.call);
+    if (!s) return;
+    s.node.dataset.s = ev.detail.level === 'issue' ? 'issue' : 'ok';
+    if (ev.label) s.out.textContent = ev.label;
+  }
+  function endSub(ev) {
+    const d = ev.detail || {};
+    const entry = subs.get(d.sub);
+    if (!entry) return;
+    const u = d.usage || {};
+    const tokens = (u.input || 0) + (u.output || 0);
+    const bits = [ev.label, tokens ? `${tok(tokens)} tokens` : null, d.seconds ? `${Math.round(d.seconds)} s` : null].filter(Boolean);
+    entry.meta.textContent = bits.join(' · ');
+    entry.el.dataset.s = d.status === 'done' ? 'done' : 'failed';
+    entry.head.querySelector('.dot').dataset.s = d.status === 'done' ? 'ok' : 'bad';
+    if (!hydrating) { entry.el.classList.remove('open'); entry.head.setAttribute('aria-expanded', 'false'); }
+    else { entry.el.classList.remove('open'); }
+  }
+
   function doneStep(ev) {
     for (const r of runs.values()) {
       const s = r.steps.get(ev.detail.call);
@@ -110,8 +160,10 @@ export function mountActivity(root) {
     switch (ev.kind) {
       case 'run.queued': case 'run.start': ensureRun(ev.run_id, d.kind || 'update', ev.created_at); break;
       case 'run.prepared': line(ensureRun(ev.run_id, 'update', ev.created_at), ev.label, { cls: 'moment', time: ev.created_at }); break;
-      case 'step': addStep(ev); break;
-      case 'step.done': doneStep(ev); break;
+      case 'subagent.start': startSub(ev); break;
+      case 'subagent.done': endSub(ev); break;
+      case 'step': if (d.sub) subStep(ev); else addStep(ev); break;
+      case 'step.done': if (d.sub) subStepDone(ev); else doneStep(ev); break;
       case 'note': {
         const r = runOf();
         const body = md(ev.label);
@@ -190,7 +242,7 @@ export function mountActivity(root) {
   async function show(id, info) {
     const data = await get(`/api/history?n=400${id ? `&session=${encodeURIComponent(id)}` : ''}`);
     model.viewingSession = id || null;
-    clear(feed); runs.clear(); steerState.clear(); last = null;
+    clear(feed); runs.clear(); steerState.clear(); subs.clear(); last = null;
     feed.append(empty);
     hydrating = true; feed.classList.add('no-anim'); stick = true;
     data.events.forEach((ev) => apply(ev, false));

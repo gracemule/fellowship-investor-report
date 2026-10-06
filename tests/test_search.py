@@ -105,12 +105,13 @@ def test_with_no_keys_the_agent_is_told_plainly(store, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     from chui_reporter.agent import tools as T
+    from chui_reporter.agent import web_tools as W
 
     T.set_store(store)
-    T.set_router(SearchRouter(store, {"tavily": Tavily(""), "brave": Brave("")}, ["tavily", "brave"]))
-    out = T.web_search.invoke({"query": "kenya inflation"})
+    W.set_router(SearchRouter(store, {"tavily": Tavily(""), "brave": Brave("")}, ["tavily", "brave"]))
+    out = W.web_search.invoke({"query": "kenya inflation"})
     assert out.startswith("ERROR") and "no API key set" in out and "request_sources" in out
-    T.set_router(None)
+    W.set_router(None)
 
 
 def test_status_shows_each_provider_for_the_interface(store):

@@ -119,3 +119,11 @@ export function md(text) {
   }
   return root;
 }
+
+// 49,345 -> "49k", 1,048,576 -> "1.05M"
+export function tok(n) {
+  if (n == null) return '';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 2).replace(/\.?0+$/, '')}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}

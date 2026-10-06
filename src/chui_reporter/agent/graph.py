@@ -87,16 +87,18 @@ WORKFLOW
    The user can message you while you work and attach files (they appear under Uploads/ in list_sources).
    Treat a message as an instruction to follow at once, and read anything they attached before you act. An
    image can guide layout or wording but never supplies a figure.
-   MACRO SNAPSHOT (3.1). If the Macro and Context folder has files, read them. If it is empty, source it
-   yourself: for each country the Fund invests in, find the latest GDP growth, inflation, policy rate and
-   exchange rate on the central bank's or national statistics office's own site (web_search, then web_fetch
-   the page). Record every figure with report_save_facts: source_file = the page's address, source_cell = the
-   exact sentence or table row from the fetched page that contains it, as_of = the period it describes. A
-   figure you only saw in a search result cannot be recorded or used. Write the as-of period after each
-   figure, use the same series for every country, and put a break in a series in a review note. If web search
-   reports it is unavailable, call request_sources(['macro']) once and leave 3.1 out if the user does not supply it.
-   Use the publisher's own pages and PDFs, never a social media post. When you fill a gap you had noted, remove the
-   old note with report_remove_review_note so the notes never contradict the report.
+   MACRO SNAPSHOT (3.1). If the Macro and Context folder has files, read them. If it is empty, delegate: call
+   research_macro with the countries the Fund invests in (from the portfolio tables). Researchers, each in a context of
+   their own, find GDP growth, inflation, the policy rate and the exchange rate on the central banks' and statistics
+   offices' own pages and verify every figure; you receive only the verified figures and the gaps. You cannot search
+   the web yourself, and should not try: the results would fill this conversation. If figures are missing, send them
+   back once more with research_macro(countries=[only those], indicators=[only those]); do not use delegate_research
+   for the table's figures, it cannot reach the table. Then call build_macro_table, write 3.1's prose from the
+   figures in the table only (state the as-of period after each). build_macro_table writes the reviewer's notes
+   about the macro gaps itself, so do not write macro notes of your own. If research_macro says nothing could be researched, call request_sources(['macro']) once and
+   leave 3.1 out if the user does not supply it. For any other question that needs the web, use delegate_research.
+   When you fill a gap you had noted, remove the old note with report_remove_review_note so the notes never contradict
+   the report.
 6. Your final message is for the reviewer: the decisions you need from them, and what you
    omitted and why (drawn from your review notes). Keep it short and plain.
 
@@ -171,7 +173,7 @@ def build_pooled_checkpointer(db_url: str | None = None):
 
 
 def build_agent(checkpointer=None, provider: str | None = None, model: str | None = None,
-                thinking: bool | None = None, *, llm=None, pre_model_hook=None, tools=None):
+                thinking: bool | None = None, *, llm=None, pre_model_hook=None, tools=None, breakpoints: bool = True):
     """The ReAct agent over whichever provider is configured (see llm.py).
 
     `llm`, `tools` and `pre_model_hook` are injectable so the same graph runs under test with a
@@ -183,4 +185,8 @@ def build_agent(checkpointer=None, provider: str | None = None, model: str | Non
         prompt=system_prompt(),
         checkpointer=checkpointer,
         pre_model_hook=pre_model_hook,
+        # Pause before every model call. At that point the previous step is fully committed (every tool call has its
+        # result), which is the only moment a person's message can be added to the conversation without tearing it:
+        # the runner uses these pauses to deliver steering and loop warnings, and to stop cleanly.
+        interrupt_before=[("pre_model_hook" if pre_model_hook else "agent")] if breakpoints else None,
     )

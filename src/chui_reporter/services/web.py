@@ -23,6 +23,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from ..agent.store import Store
+from . import tls
 from .search import NoSearchAvailable, SearchRouter
 
 MAX_BYTES = 3_000_000
@@ -118,7 +119,17 @@ def norm(s: str) -> str:
 
 def _download(url: str, client: httpx.Client) -> tuple[str, bytes, str]:
     current = check_url(url)
-    for _ in range(MAX_REDIRECTS + 1):
+    repaired: set[str] = set()
+    opened: list[httpx.Client] = []
+    try:
+        return _hops(current, client, repaired, opened)
+    finally:
+        for c in opened:
+            c.close()
+
+
+def _hops(current: str, client: httpx.Client, repaired: set[str], opened: list[httpx.Client]) -> tuple[str, bytes, str]:
+    for _ in range(MAX_REDIRECTS + 2):
         try:
             with client.stream("GET", current, headers={"User-Agent": UA, "Accept": "text/html,application/pdf,application/json,text/plain,*/*"},
                                follow_redirects=False) as r:
@@ -135,7 +146,18 @@ def _download(url: str, client: httpx.Client) -> tuple[str, bytes, str]:
                     body.write(chunk)
                 return current, body.getvalue(), (r.headers.get("content-type") or "").split(";")[0].strip().lower()
         except httpx.HTTPError as exc:
-            raise FetchError(f"could not reach the site ({type(exc).__name__})") from exc
+            host = urlparse(current).hostname or ""
+            if current.startswith("https://") and host not in repaired and tls.incomplete_chain(exc):
+                # The site did not send its intermediate certificate. Fetch it from the address the certificate names, as a
+                # browser would, and try again with the chain still fully verified.
+                repaired.add(host)
+                fixed = tls.repaired_client(host, lambda u: _download(u, httpx.Client(timeout=10.0))[1],
+                                            port=urlparse(current).port or 443)
+                if fixed is not None:
+                    opened.append(fixed)
+                    client = fixed
+                    continue
+            raise FetchError(f"could not reach the site ({type(exc).__name__}{': certificate not trusted' if tls.incomplete_chain(exc) else ''})") from exc
     raise FetchError("too many redirects")
 
 

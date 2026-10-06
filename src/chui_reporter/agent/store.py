@@ -154,6 +154,24 @@ CREATE TABLE IF NOT EXISTS {s}.session (
     thread_id    TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Work delegated to subagents: what was asked, what came back, what it cost. The audit trail for anything a
+-- subagent contributed to the report.
+CREATE TABLE IF NOT EXISTS {s}.subagent_run (
+    id          TEXT PRIMARY KEY,
+    report_id   TEXT NOT NULL,
+    run_id      TEXT,
+    session_id  TEXT,
+    agent       TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    task        TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',
+    result      JSONB,
+    usage       JSONB,
+    error       TEXT,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS subagent_report ON {s}.subagent_run (report_id, agent, label, started_at);
 CREATE TABLE IF NOT EXISTS {s}.run (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -184,6 +202,7 @@ CREATE TABLE IF NOT EXISTS {s}.event (
 CREATE INDEX IF NOT EXISTS event_ws_id ON {s}.event (workspace_id, id);
 ALTER TABLE {s}.event ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS session_id TEXT;
+ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS usage JSONB;
 CREATE INDEX IF NOT EXISTS event_session ON {s}.event (session_id, id);
 CREATE TABLE IF NOT EXISTS {s}.question (
     id           TEXT PRIMARY KEY,
@@ -446,6 +465,22 @@ class Store:
                 q += " AND area=%s"
                 args.append(area)
             return c.execute(q + " RETURNING id", args).rowcount
+
+    def replace_review_notes(self, area: str, notes: list[tuple[str, str]], *, area_like: str | None = None,
+                             also_text_like: tuple[str, ...] = ()) -> int:
+        """Make `notes` ((text, severity) pairs) the whole of what is said about `area`: older notes whose area contains
+        `area_like` (default: the area itself), and any whose text contains one of `also_text_like`, are removed first. For notes that code derives from the ledger, so they
+        are rewritten, never accumulated and never left contradicting the report. Returns how many were removed."""
+        with self.conn() as c:
+            q = f"DELETE FROM {self._t('review_note')} WHERE report_id=%s AND (area ILIKE %s"
+            args: list = [self.report_id, f"%{area_like or area}%"]
+            for frag in also_text_like:
+                q += " OR text ILIKE %s"
+                args.append(f"%{frag}%")
+            removed = c.execute(q + ") RETURNING id", args).rowcount
+        for text, severity in notes:
+            self.add_review_note(area, text, severity)
+        return removed
 
     def sections(self) -> list[dict]:
         with self.conn() as c:

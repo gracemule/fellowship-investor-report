@@ -92,7 +92,7 @@ def build(rt) -> dict:
         "period": {"code": period.code, "label": period.label, "prev": period.prev.label,
                    "next": period.next.label, "end": period.end_label},
         "status": {"phase": phase, "headline": headline, "detail": detail, "action": action},
-        "run": ({k: run[k] for k in ("id", "kind", "status", "error", "created_at")} if run else None),
+        "run": ({k: run.get(k) for k in ("id", "kind", "status", "error", "created_at", "usage")} if run else None),
         "questions": questions,
         "coverage": [c.as_dict() for c in cov],
         "unplaced": [p for p in paths if ws_sync.slot_for_path(p) is None

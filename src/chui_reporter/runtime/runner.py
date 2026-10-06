@@ -38,7 +38,7 @@ from ..agent.store import Store
 from ..workspace import sync as ws_sync
 from ..workspace.slots import BY_ID
 from . import narrator, state, versions
-from .compaction import DEFAULT_BUDGET, make_hook, store_brief
+from .compaction import ContextMeter, make_hook, store_brief
 from .failures import backoff, classify
 from .guard import LoopGuard
 
@@ -104,6 +104,9 @@ class Runtime:
         self._ws: dict | None = None
         self._limit_hit = False
         self._compact_seen: set = set()
+        self._usage: dict = {}
+        self._meter = None
+        self._limits = None
         self._run_id: str | None = None
         self._ws_at = 0.0
         self._session: dict | None = None
@@ -136,6 +139,12 @@ class Runtime:
         running whose heartbeat has gone quiet were killed mid-flight and are resumed from their
         last checkpoint."""
         n = 0
+        try:
+            from ..agents import records
+
+            records.interrupt_running(self.store, 900)      # delegated work in flight when a process died cannot be resumed
+        except Exception:                                   # noqa: BLE001
+            pass
         for r in state.stale_runs(self.store, STALE_AFTER):
             state.requeue(self.store, r["id"])
             state.update_run(self.store, r["id"], status="queued", error=None)
@@ -454,6 +463,7 @@ class Runtime:
         rs = self.report_store()
         T.set_store(rs)
         T.reset_questions()
+        self._arm_subagents(run, rs)
         if self._prepare_files:
             src = self.workdir / "source"
             n = self.materialize_workspace()
@@ -466,6 +476,39 @@ class Runtime:
             state.emit(self.store, "run.prepared", f"Working from {len([1 for _ in src.rglob('*') if _.is_file()])} files "
                        f"in your folder", run_id=run["id"], detail={"written": n})
         return rs
+
+    def _arm_subagents(self, run: dict, rs: Store) -> None:
+        """Tell the subagent engine how to reach this run's feed, stop flag, usage counters and model."""
+        from ..agent import llm as llm_mod
+        from ..agent.limits import get_limits
+        from ..agents import engine
+
+        rid = run["id"]
+        window = 128_000
+        if self._agent_factory is None:
+            spec = llm_mod.resolve_provider(self._provider())
+            window = get_limits(spec.name, os.environ.get("CHUI_SUBAGENT_MODEL") or llm_mod.resolve_model(spec)).context_window
+        engine.set_context(engine.Context(
+            store=rs, report_id=rs.report_id, run_id=rid, session_id=self.session()["id"],
+            emit=lambda kind, label="", chapter=None, detail=None: state.emit(self.store, kind, label, run_id=rid, chapter=chapter, detail=detail),
+            should_stop=lambda: self._stop_run.is_set() or self._shutdown.is_set(),
+            tally=lambda u: self._tally_sub(rid, u),
+            llm_factory=lambda: llm_mod.get_llm(self._provider(), os.environ.get("CHUI_SUBAGENT_MODEL") or None, thinking=False),
+            window=window, parallel=int(os.environ.get("CHUI_SUBAGENT_PARALLEL", "3")), sleep=self._sleep))
+
+    def _tally_sub(self, rid: str, usage: dict) -> None:
+        """Tokens used by subagents are counted apart from the main conversation's own."""
+        with self._lock:
+            s = self._usage.setdefault("sub", {"calls": 0, "input": 0, "output": 0, "cached": 0})
+            s["calls"] += 1
+            s["input"] += int(usage.get("input_tokens") or 0)
+            s["output"] += int(usage.get("output_tokens") or 0)
+            s["cached"] += int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+            snapshot = {**self._usage, "sub": dict(s)}
+        try:
+            state.update_run(self.store, rid, usage=snapshot)
+        except Exception:                                   # noqa: BLE001
+            pass
 
     def materialize_workspace(self) -> int:
         """Write the synced folder to disk and point every source location (and the output folder) at it."""
@@ -485,34 +528,66 @@ class Runtime:
     def _make_agent(self, rs: Store):
         if self._agent_factory:
             return self._agent_factory(self._provider())
-        from ..agent.graph import build_agent
+        import json
+
+        from ..agent import llm as llm_mod
+        from ..agent.graph import build_agent, system_prompt
+        from ..agent.limits import get_limits
+        from ..agent.tools import ALL_TOOLS
+
+        spec = llm_mod.resolve_provider(self._provider())
+        model = llm_mod.resolve_model(spec)
+        lim = get_limits(spec.name, model)
+        # what every call carries before any conversation: the brief and the tool definitions
+        schemas = sum(len(t.name) + len(t.description or "") + len(json.dumps(t.args_schema.model_json_schema())
+                                        if hasattr(t.args_schema, "model_json_schema") else "") for t in ALL_TOOLS)
+        overhead = int((len(system_prompt()) + schemas) / 3.5)
+        meter = ContextMeter(lim.context_window, reserve=min(lim.max_output, 32_000), overhead=overhead)
+        meter.scale_thresholds(self._budget_factor)
+        self._meter, self._limits = meter, lim
         seen = self._compact_seen
 
         def note(stats: dict) -> None:
-            # The hook runs before every model call; one line per kind of trimming per run is enough.
-            key = (self._run_id, stats["stage"])
-            if key in seen:
-                return
-            seen.add(key)
+            # Decisions are frozen, so this fires only when the boundary actually moves.
             saved = max(0, stats["before"] - stats["after"])
+            used, window = stats["used_tokens"], stats["window"]
+            reached = (f"The conversation reached {used:,} of {window:,} tokens ({used / window:.0%} of what the model supports)"
+                       + ("" if stats.get("measured") else " (estimated)"))
             if stats["stage"] == 2:
-                what = (f"Condensed {stats['dropped']} older messages into a short summary of where the work stands "
-                        f"(about {saved:,} tokens saved). Everything recorded in the fact ledger and the report is untouched.")
+                what = (f"{reached}, so {stats['dropped']} older messages were condensed into a short summary of where the "
+                        f"work stands (about {saved:,} tokens saved). Everything in the fact ledger and the report is untouched.")
             else:
                 kinds = ", ".join(f"{n} {name.replace('_', ' ')}" for name, n in
                                   sorted(stats["by_tool"].items(), key=lambda x: -x[1])[:3])
-                what = (f"Shortened {stats['shortened']} older tool results ({kinds}) to their opening lines, about "
-                        f"{saved:,} tokens saved. No messages were removed, and recorded figures are untouched.")
+                what = (f"{reached}, so {stats['shortened']} older tool results ({kinds}) were shortened to their opening "
+                        f"lines (about {saved:,} tokens saved). No messages were removed, and recorded figures are untouched.")
+            if not lim.source == "provider":
+                what += f" The model's limit is {lim.source}."
             state.emit(self.store, "compacted", what, run_id=self._run_id, detail=stats)
 
-        hook = make_hook(int(DEFAULT_BUDGET * self._budget_factor), brief=lambda: store_brief(rs), on_compact=note)
+        hook = make_hook(meter, brief=lambda: store_brief(rs), on_compact=note)
         return build_agent(self.saver, provider=self._provider(), pre_model_hook=hook)
+
+    def _tally(self, rid: str, usage: dict) -> None:
+        """Add one model reply's own token counts to the run's running total (and save it for the interface)."""
+        u = self._usage
+        u["calls"] = u.get("calls", 0) + 1
+        u["input"] = u.get("input", 0) + int(usage.get("input_tokens") or 0)
+        u["output"] = u.get("output", 0) + int(usage.get("output_tokens") or 0)
+        u["cached"] = u.get("cached", 0) + int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+        u["last_prompt"] = int(usage.get("input_tokens") or 0)
+        u["window"] = getattr(self._limits, "context_window", None)
+        try:
+            state.update_run(self.store, rid, usage=dict(u))
+        except Exception:                                   # noqa: BLE001 - accounting never stops a run
+            pass
 
     # -- the loop
 
     def _drive(self, run: dict) -> str:
         rid = run["id"]
         self._run_id = rid
+        self._usage = {}
         rs = self._prepare(run)
         self._agent = agent = self._make_agent(rs)
         cfg = {"configurable": {"thread_id": run["thread_id"]}, "recursion_limit": SEGMENT_STEPS}
@@ -618,7 +693,7 @@ class Runtime:
                     continue
                 if f.kind == "context" and attempt < 3:
                     attempt += 1
-                    self._budget_factor *= 0.6
+                    self._budget_factor *= 0.6          # trim sooner from now on
                     state.emit(self.store, "compacted", "The conversation was too long; trimming harder and continuing.",
                                run_id=rid)
                     self._agent = agent = self._make_agent(self.report_store())
@@ -697,13 +772,36 @@ class Runtime:
         return [i for t in (snap.tasks or ()) for i in (t.interrupts or ())]
 
     def _stream(self, agent, cfg, payload, rid, guard: LoopGuard):
-        """Run the graph, narrating as it goes. A steer or a loop warning is delivered only at a
-        clean boundary -- after a tool node has answered every call in flight -- so the saved
-        conversation is never left with a call that has no result."""
-        interrupts, nudge = None, None
+        """Run the graph to its end, a question, or the step limit, delivering the user's messages along the way.
+
+        The graph pauses before every model call (see build_agent). Each pause is a consistent moment: the previous step
+        is committed, every tool call has its result. That is where a steer or a loop warning is added to the
+        conversation and where a stop takes effect, so the saved conversation is never left with a call that has no result."""
+        nudge = None
+        now = payload
+        while True:
+            outcome, nudge = self._run_to_pause(agent, cfg, now, rid, guard, nudge)
+            if outcome[0] != "pause":
+                return outcome
+            if self._stop_run.is_set():
+                raise Stopped()
+            text = nudge
+            with self._lock:
+                if self._steer:
+                    batch, self._steer = self._steer, []
+                    for item in batch:
+                        state.emit(self.store, "steer.applied", "", run_id=rid, detail={"id": item["id"]})
+                    text = (nudge + "\n\n" if nudge else "") + "The user says: " + " ".join(i["text"] for i in batch)
+            if text:
+                agent.update_state(cfg, {"messages": [HumanMessage(content=text)]})
+                nudge = None
+            now = None
+
+    def _run_to_pause(self, agent, cfg, payload, rid, guard: LoopGuard, nudge):
+        """One stretch of the graph. Returns (('pause'|'finished'|'interrupted'|'limit', info), nudge)."""
+        interrupts, saw_ai, last_had_calls = None, False, False
         self._limit_hit = False
         for chunk in agent.stream(payload, cfg, stream_mode="updates"):
-            answered = False
             for node, update in chunk.items():
                 if node == "__interrupt__":
                     interrupts = list(update)
@@ -711,28 +809,24 @@ class Runtime:
                 if not isinstance(update, dict):
                     continue
                 for msg in update.get("messages") or []:
-                    if isinstance(msg, ToolMessage):
-                        answered = True
+                    if isinstance(msg, AIMessage):
+                        saw_ai, last_had_calls = True, bool(msg.tool_calls)
                     nudge = self._narrate(rid, msg, guard) or nudge
-            if self._stop_run.is_set():
-                raise Stopped()
-            if answered:
-                if nudge:
-                    return "steered", nudge
-                with self._lock:
-                    if self._steer:
-                        batch, self._steer = self._steer, []
-                        for item in batch:
-                            state.emit(self.store, "steer.applied", "", run_id=rid, detail={"id": item["id"]})
-                        return "steered", "The user says: " + " ".join(i["text"] for i in batch)
         if interrupts:
-            return "interrupted", interrupts
+            return ("interrupted", interrupts), nudge
         if self._limit_hit:                 # the graph's own step allowance for this stretch ran out
-            return "limit", None
-        return "finished", None
+            return ("limit", None), nudge
+        if saw_ai and not last_had_calls:   # the model answered in words: the work is at its end
+            return ("finished", None), nudge
+        # Otherwise the graph is paused before a model call; the first call (no reply seen yet) is checked, not assumed.
+        if saw_ai or agent.get_state(cfg).next:
+            return ("pause", None), nudge
+        return ("finished", None), nudge
 
     def _narrate(self, rid: str, msg, guard: LoopGuard) -> str | None:
         if isinstance(msg, AIMessage):
+            if getattr(msg, "usage_metadata", None):
+                self._tally(rid, msg.usage_metadata)
             calls = msg.tool_calls or []
             if not calls:
                 text = msg.content if isinstance(msg.content, str) else \

@@ -11,7 +11,7 @@ from __future__ import annotations
 CHAPTERS = ("Reading sources", "Recording figures", "Building tables", "Writing", "Checking and rendering")
 
 _C = {
-    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "look_at_image": CHAPTERS[0], "web_search": CHAPTERS[0], "web_fetch": CHAPTERS[0], "excel_sheets": CHAPTERS[0],
+    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "look_at_image": CHAPTERS[0], "web_search": CHAPTERS[0], "web_fetch": CHAPTERS[0], "research_macro": CHAPTERS[0], "delegate_research": CHAPTERS[0], "build_macro_table": CHAPTERS[2], "excel_sheets": CHAPTERS[0],
     "excel_find_value": CHAPTERS[0], "excel_dump_region": CHAPTERS[0], "portfolio_valuations": CHAPTERS[0],
     "fund_capital_position": CHAPTERS[0], "financial_statements": CHAPTERS[0], "prior_report_table": CHAPTERS[0],
     "report_save_facts": CHAPTERS[1], "report_derive_fact": CHAPTERS[1], "ledger_search": CHAPTERS[1],
@@ -49,6 +49,9 @@ def describe_call(name: str, args: dict) -> tuple[str, str]:
         "read_pdf": f"Reading {_file(a) or 'a PDF'}",
         "read_text": f"Reading {_file(a) or 'a document'}",
         "look_at_image": f"Looking at {_file(a) or 'an image'}",
+        "research_macro": f"Researching {len(a.get('countries') or [])} countries’ macro data with subagents",
+        "delegate_research": f"Delegating a research question: {_s(a.get('label') or a.get('question'), 60)}",
+        "build_macro_table": "Building the macro table from verified figures",
         "web_search": f"Searching the web for “{_s(a.get('query'), 70)}”",
         "web_fetch": f"Reading {_host(a.get('url'))}",
         "excel_sheets": f"Opening {_file(a) or 'a workbook'}",
