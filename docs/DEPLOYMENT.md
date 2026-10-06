@@ -66,6 +66,12 @@ Non-secret settings are already on the services. Secrets live only in the Render
    `python -m chui_reporter.render.check_converter` (with `CHUI_PDF_CONVERTER=remote` and the two converter settings) must
    report that Larken is in the PDF.
 
+## Database size (Neon free tier)
+
+The app's own data is small (tens of MB). The agent's saved checkpoints were the only thing that grew; they are pruned as the agent
+works (see the README) and a one-time `python -m chui_reporter.runtime.retention --apply` shrank them from 327 MB to 2 MB on
+6 Oct 2026. If the database ever looks large again, run that command without `--apply` first: it reports what it would keep.
+
 ## Limits to know about
 
 * Free services have a fraction of a CPU: conversions and page images are slower than on a laptop.

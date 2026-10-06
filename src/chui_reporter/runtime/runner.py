@@ -20,6 +20,7 @@ What this file is responsible for, and why each is here:
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import socket
@@ -37,7 +38,7 @@ from ..agent.run import repair_dangling_tool_calls, unfinished
 from ..agent.store import Store
 from ..workspace import sync as ws_sync
 from ..workspace.slots import BY_ID
-from . import narrator, state, versions
+from . import narrator, retention, state, versions
 from .compaction import ContextMeter, make_hook, store_brief
 from .failures import backoff, classify
 from .guard import LoopGuard
@@ -163,8 +164,39 @@ class Runtime:
             self._q.put(rid)
         return n
 
+    def _prune(self, thread_id: str) -> None:
+        """Shrink one conversation's saved memory to its newest checkpoints. Housekeeping: it never fails or delays a run."""
+        if self._pool is None:                              # tests and local runs keep their memory in process
+            return
+        try:
+            with self._pool.connection() as cx:
+                retention.prune_thread(cx, thread_id)
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger("uvicorn.error").warning("could not prune the saved memory of %s: %s", thread_id, exc)
+
+    def _retention_pass(self) -> None:
+        """Every conversation back to its newest checkpoints (except any in use), then the distant budget safety net."""
+        if self._pool is None:
+            return
+        try:
+            with self.store.conn() as c:
+                active = list(c.execute(f"SELECT DISTINCT thread_id FROM {self.store._t('run')} WHERE status = ANY(%s)", (list(state.ACTIVE),)))
+                idle = list(c.execute(
+                    f"SELECT s.thread_id, max(e.created_at) AS last FROM {self.store._t('session')} s "
+                    f"LEFT JOIN {self.store._t('event')} e ON e.session_id = s.id GROUP BY s.thread_id "
+                    f"ORDER BY max(e.created_at) NULLS FIRST, min(s.created_at)"))
+            protected = {r["thread_id"] for r in active}
+            if idle:
+                protected.add(idle[-1]["thread_id"])        # the most recently used conversation is never dropped
+            with self._pool.connection() as cx:
+                retention.prune_all(cx, skip=protected)
+                retention.enforce_budget(cx, [r["thread_id"] for r in idle], protected)
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger("uvicorn.error").warning("saved-memory housekeeping failed: %s", exc)
+
     def _worker(self) -> None:
         last_janitor = time.time()
+        self._retention_pass()
         while not self._shutdown.is_set():
             try:
                 rid = self._q.get(timeout=2.0)
@@ -175,6 +207,7 @@ class Runtime:
                         self.recover()
                     except Exception:   # noqa: BLE001
                         pass
+                    self._retention_pass()
                 continue
             try:
                 self.execute(rid)
@@ -512,6 +545,7 @@ class Runtime:
         finally:
             hb.stop()
             self._drop_steer(run_id)
+            self._prune(run["thread_id"])
         if outcome == "stopped":
             state.update_run(self.store, run_id, status="stopped")
             state.emit(self.store, "run.end", "Stopped.", run_id=run_id, detail={"status": "stopped"})
@@ -850,12 +884,16 @@ class Runtime:
         conversation and where a stop takes effect, so the saved conversation is never left with a call that has no result."""
         nudge = None
         now = payload
+        pauses = 0
         while True:
             outcome, nudge = self._run_to_pause(agent, cfg, now, rid, guard, nudge)
             if outcome[0] != "pause":
                 return outcome
             if self._stop_run.is_set():
                 raise Stopped()
+            pauses += 1
+            if pauses % retention.PRUNE_EVERY == 0:          # between steps: nothing is in flight, so this cannot race one
+                self._prune(cfg["configurable"]["thread_id"])
             text = nudge
             with self._lock:
                 if self._steer:

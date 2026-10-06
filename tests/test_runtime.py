@@ -287,8 +287,11 @@ def test_a_nudge_is_never_delivered_between_the_parallel_results_of_one_step(sto
 
 
 def test_a_steer_is_never_delivered_between_the_parallel_results_of_one_step(store):
-    rt, llm = _runtime(store, [calls(("render_it", {}, "a"), ("look_it", {}, "b")), calls(("write_it", {"key": "1.1", "text": "In Q2 2026, the Fund grew."}, "c"),
-                                                                                          ("render_it", {}, "d"))] + [call("look_it", {}, "e")])
+    # Two parallel pairs. Nothing in a pair depends on the order its two tools finish in (a write racing a render would),
+    # and the report is rendered and inspected by single calls afterwards, so the run can legitimately complete.
+    rt, llm = _runtime(store, [calls(("look_it", {}, "a"), ("look_it", {}, "b")),
+                               calls(("write_it", {"key": "1.1", "text": "In Q2 2026, the Fund grew."}, "c"), ("look_it", {}, "d")),
+                               call("render_it", {}, "e"), call("look_it", {}, "f")])
     rid = rt._create("build", "Build it")
     rt.steer("Keep it short.")
     assert rt.execute(rid) == "done", state.get_run(store, rid)["error"]
