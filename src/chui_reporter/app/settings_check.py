@@ -18,7 +18,13 @@ def report(environ=None) -> str:
     parts = []
     for name in EXPECTED:
         v = env.get(name)
-        parts.append(f"{name}=" + ("MISSING" if v is None else "EMPTY" if not v.strip() else f"set({len(v.strip())} chars)"))
+        state = "MISSING" if v is None else "EMPTY" if not v.strip() else f"set({len(v.strip())} chars)"
+        if name == "CHUI_CONVERTER_TOKEN" and v and v.strip():     # shared with the converter, which logs the same fingerprint
+            from ..render.convert import clean_secret, fingerprint
+
+            tok = clean_secret(v, name)
+            state = f"set({len(tok)} chars, fingerprint {fingerprint(tok)})"
+        parts.append(f"{name}={state}")
     # Anything that looks like it was meant to be one of the above but is not spelled the same.
     extra = sorted(k for k in env if k not in EXPECTED and (k.startswith("CHUI_") or "PASSWORD" in k.upper() or "PASSWD" in k.upper())
                    and k not in ("CHUI_WORKDIR", "CHUI_SEARCH_ORDER", "CHUI_FALLBACK_PROVIDER", "CHUI_JANITOR_SECONDS",

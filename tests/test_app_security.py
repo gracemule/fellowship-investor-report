@@ -137,3 +137,13 @@ def test_production_refuses_to_start_without_a_password_and_says_what_it_can_see
     monkeypatch.setenv("CHUI_ACCESS_PASSWORD", "")
     with pytest.raises(RuntimeError, match="CHUI_ACCESS_PASSWORD=EMPTY"):
         Auth.from_env()
+
+
+def test_the_converter_token_is_shown_only_as_a_fingerprint_that_matches_the_converters_own_log():
+    from chui_reporter.app.settings_check import report
+    from chui_reporter.render.convert import fingerprint
+
+    line = report({"CHUI_CONVERTER_TOKEN": "a-shared-secret-value"})
+    assert f"fingerprint {fingerprint('a-shared-secret-value')}" in line and "a-shared-secret-value" not in line
+    quoted = report({"CHUI_CONVERTER_TOKEN": '"a-shared-secret-value"'})
+    assert f"fingerprint {fingerprint('a-shared-secret-value')}" in quoted, "quotes do not change what is compared"
