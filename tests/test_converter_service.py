@@ -257,3 +257,9 @@ def test_a_token_mismatch_can_be_found_in_the_logs_without_revealing_either_toke
 
     assert fingerprint("another-token-entirely") in line and fingerprint("s3cret-token") in line
     assert "22 characters" in line and "12 characters" in line           # what was presented, and what the service holds
+
+
+def test_the_root_address_answers_get_and_head_so_an_uptime_monitor_sees_it_as_up(svc):
+    assert svc.get("/").status_code == 200 and svc.get("/").json()["service"] == "chui-converter"
+    assert svc.head("/").status_code == 200
+    assert svc.calls == []

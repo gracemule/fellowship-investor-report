@@ -4,13 +4,11 @@
 import { post } from './api.js';
 import * as folder from './folder.js';
 import { emit, model, subscribe } from './live.js';
+import { setQuarter } from './quarter.js';
 import { ICON, clear, h, svg, toast } from './util.js';
 
 export function mountMenu({ button, menu, onSignOut }) {
-  const setPeriod = async (code) => {
-    try { model.state = await post('/api/period', { period: code }); emit('state'); }
-    catch (e) { toast(e.message, 'bad'); }
-  };
+  const setPeriod = async (code) => { close(); await setQuarter(code); };
   const close = () => { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
 
   function render() {
@@ -24,6 +22,10 @@ export function mountMenu({ button, menu, onSignOut }) {
           h('button', { type: 'button', 'aria-label': 'Previous quarter', onclick: () => setPeriod(S.period.prev) }, svg(ICON.chev, { size: 14, cls: 'flip' })),
           h('b', {}, S.period.label),
           h('button', { type: 'button', 'aria-label': 'Next quarter', onclick: () => setPeriod(S.period.next) }, svg(ICON.chev, { size: 14 })))),
+      h('button', { class: 'row newq', type: 'button', role: 'menuitem', onclick: () => setPeriod(S.period.next_code) },
+        h('span', {}, h('span', { class: 'l1' }, h('b', {}, `Start ${S.period.next}`)),
+          h('small', {}, 'A clean slate: its own folder, report and notes. Only the brand kit carries over.')), svg(ICON.plus, { size: 15 })),
+      h('hr'),
       h('button', { class: 'row', type: 'button', role: 'menuitemcheckbox', 'aria-checked': String(auto),
         onclick: async () => { model.state = await post('/api/settings', { auto: !auto }); emit('state'); } },
         h('span', {}, 'Update automatically'), h('span', { class: 'switch-ctl', role: 'switch', 'aria-checked': String(auto) })),

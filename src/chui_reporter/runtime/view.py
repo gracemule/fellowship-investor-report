@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..agent.llm import describe
 from ..workspace import sync as ws_sync
+from ..workspace.slots import is_durable
 from . import state
 
 
@@ -28,11 +29,18 @@ def build(rt) -> dict:
     from .. import period as pr
 
     store = rt.store
-    rows = state.snapshot_rows(store)
+    period = rt.period()
+    rows = state.snapshot_rows(store, period=period.code)
     ws = rows["workspace"]
-    period = pr.Period.parse(ws["period"])
+    fws = rows.get("files_ws") or {}                     # the quarter's own workspace row: when and from where it was synced
     paths = rows["paths"]
-    cov = ws_sync.coverage_of(paths)
+    pv = rows.get("prior_version")
+    prior = {"label": period.prev.label, "version": pv["version"]} if pv else None
+    cov = ws_sync.coverage_of(paths, prior=prior)
+    # What this quarter itself holds: not the brand kit (it stands for every quarter), not files attached in a message.
+    quarter_files = [p for p in paths if not is_durable(p) and not p.startswith(ws_sync.UPLOADS)]
+    folder = (fws.get("settings") or {}).get("folder")
+    synced_at = fws.get("last_sync_at")
     run = rows["run"]
     questions = rows["questions"]
     versions = rows["versions"]
@@ -40,7 +48,7 @@ def build(rt) -> dict:
     missing = ws_sync.required_missing(cov)
     pending = rt._pending.any
     active = bool(run and run["status"] in state.ACTIVE)
-    files = paths
+    files = quarter_files
 
     phase, headline, detail, action = "idle", "", "", None
     if active:
@@ -61,9 +69,14 @@ def build(rt) -> dict:
             detail = _latest_step(store, run["id"]) or ""
         action = {"id": "stop", "label": "Stop"}
     elif not files:
-        phase, headline = "empty", "Choose your quarter’s folder"
-        detail = "Everything the report needs is read from one folder on your computer."
-        action = {"id": "pick", "label": "Choose folder"}
+        if synced_at:       # a folder was connected, and it holds nothing for this quarter (yet)
+            phase, headline = "empty_folder", f"“{folder or 'The folder'}” is empty"
+            detail = f"Put the {period.label} files in it. They are picked up on their own."
+            action = {"id": "pick", "label": "Choose another folder"}
+        else:
+            phase, headline = "empty", f"Choose the {period.label} folder"
+            detail = "The report is built from one folder on your computer."
+            action = {"id": "pick", "label": "Choose folder"}
     elif missing:
         phase, headline = "needs_sources", f"{len(missing)} {'thing' if len(missing) == 1 else 'things'} still needed"
         detail = "Add " + _labels([m.slot.label for m in missing]) + "."
@@ -87,10 +100,11 @@ def build(rt) -> dict:
         phase, headline = "current", "The report is up to date"
 
     return {
-        "workspace": {"name": ws["name"], "last_sync_at": ws["last_sync_at"],
+        "workspace": {"name": ws["name"], "last_sync_at": synced_at, "folder": folder,
                       "auto": bool((ws.get("settings") or {}).get("auto", True)), "files": len(files)},
-        "period": {"code": period.code, "label": period.label, "prev": period.prev.label,
-                   "next": period.next.label, "end": period.end_label},
+        "period": {"code": period.code, "label": period.label, "prev": period.prev.label, "prev_code": period.prev.code,
+                   "next": period.next.label, "next_code": period.next.code, "end": period.end_label,
+                   "has_report": version is not None, "prior": prior},
         "status": {"phase": phase, "headline": headline, "detail": detail, "action": action},
         "run": ({k: run.get(k) for k in ("id", "kind", "status", "error", "created_at", "usage")} if run else None),
         "questions": questions,

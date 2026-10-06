@@ -30,14 +30,15 @@ export function mountViewer(root) {
     const S = model.state;
     const ph = S?.status.phase;
     const copy = {
-      empty: ['Your report will appear here', 'Choose the folder with this quarter’s files and the agent will take it from there.'],
+      empty: [`${S?.period.label || 'This quarter'} has nothing yet`, 'Choose this quarter’s folder and the report appears here as soon as it is built.'],
+      empty_folder: [`${S?.period.label || 'This quarter'} has nothing yet`, 'The folder is connected but empty. Add this quarter’s files and the report is built from them.'],
       needs_sources: ['Waiting for the last files', 'The report is built as soon as everything it needs is in your folder.'],
       ready: ['Ready to build', 'Everything required is in. Start the build and the pages appear here as soon as they are rendered.'],
       working: ['Building your report', 'The first version appears here when it has been rendered and checked.'],
       waiting_user: ['Paused for your answer', 'The agent has a question. Answer it on the left and it carries on.'],
       waiting_data: ['Waiting for files', 'The agent carries on by itself once they are in your folder.'],
       attention: ['Not built yet', 'The last attempt stopped. Your work is saved; continue from the left.'],
-    }[ph] || ['Your report will appear here', ''];
+    }[ph] || [`${S?.period.label || 'This quarter'} has nothing yet`, ''];
     clear(empty).append(h('div', { class: 'inner' },
       h('div', { class: 'ghost', 'aria-hidden': 'true' }, h('i', { class: 't' }), h('i', { class: 'a' }), h('i', { class: 'b' }), h('i', { class: 'c' }), h('i', { class: 'd' }), h('i', { class: 'g' }), h('i', { class: 'b' }), h('i', { class: 'a' })),
       h('h2', { class: 'headline' }, copy[0]), copy[1] && h('p', { class: 'detail' }, copy[1])));
@@ -227,6 +228,7 @@ export function mountViewer(root) {
     } catch { /* retried on the next event */ }
   };
   subscribe((what) => {
+    if (what === 'quarter') { shown = null; pinned = false; latestSeen = 0; sheets = []; clear(stack); closePop(); $('.banner', root)?.remove(); scroller.hidden = true; empty.hidden = false; renderEmpty(); }
     if (what === 'report') refresh();
     if (what === 'state') { const R = shown || model.report; if (R?.version) renderTop(R); else renderEmpty(); }
   });

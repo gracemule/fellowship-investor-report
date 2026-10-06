@@ -636,7 +636,9 @@ def build_document(sections: list[dict], tables: dict[str, dict], charts: dict[s
     for sec in doc.sections[2:]:
         sec.footer.is_linked_to_previous = True
     doc.core_properties.title = f"{meta.get('fund', 'Chui Ventures Fund I')} — {meta.get('quarter', '')}"
-    doc.core_properties.author = "Chui Ventures"
+    doc.core_properties.author = ""                  # the report names no author
+    doc.core_properties.last_modified_by = ""
+    doc.core_properties.comments = ""
     doc.save(str(dest))
     return entries
 

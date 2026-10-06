@@ -109,8 +109,8 @@ def test_requested_sources_resume_by_themselves_when_files_arrive(store):
     import hashlib
     data = b"gdp,3.1"
     h = hashlib.sha256(data).hexdigest()
-    sync.put_file(store, "Macro and Context/indicators.csv", data, h)
-    ch = sync.commit(store, [{"path": "Macro and Context/indicators.csv", "sha256": h}])
+    sync.put_file(store, "Macro and Context/indicators.csv", data, h, workspace=rt.files_ws())      # into this quarter's files
+    ch = sync.commit(store, [{"path": "Macro and Context/indicators.csv", "sha256": h}], rt.files_ws())
     rt.on_sync(ch)                                          # the arrival is what answers it
     assert state.get_run(store, rid)["status"] == "queued"
     assert rt.execute(rid) == "done"

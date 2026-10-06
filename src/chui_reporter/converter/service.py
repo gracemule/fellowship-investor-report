@@ -6,7 +6,7 @@ and holds no secret except the token the app presents.
 
     POST /convert    body: a zip holding one .docx and, optionally, fonts/<name>.ttf; header Authorization: Bearer <token>
                      -> the PDF
-    GET|HEAD /healthz    liveness (no work, safe to ping every few minutes)
+    GET|HEAD / and /healthz    liveness (no work, safe to ping every few minutes; free uptime monitors send HEAD)
     GET /selftest        converts a built-in sample and reports the time and memory used (no input, rate limited)
 
 The brand font (Larken) is licensed and is not in the image. The app sends the three faces it needs with each request; they
@@ -151,6 +151,11 @@ def create_app() -> FastAPI:
     # found in the logs without reading either secret.
     log.info("converter token: %s", f"{len(configured_token())} characters, fingerprint {fingerprint(configured_token())}"
              if configured_token() else "NOT SET: every conversion will be refused")
+
+    @app.api_route("/", methods=["GET", "HEAD"])
+    def root():
+        """The address people (and uptime monitors) naturally try first. Free monitors send HEAD, so both are answered."""
+        return JSONResponse({"service": "chui-converter", "ok": True})
 
     @app.api_route("/healthz", methods=["GET", "HEAD"])
     def healthz():

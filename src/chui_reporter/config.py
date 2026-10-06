@@ -75,7 +75,7 @@ def gp_workpaper() -> Path:
 
 
 def fund_model() -> Path:
-    return find(PORTFOLIO_DATA, "fund model*.xlsx")
+    return find(PORTFOLIO_DATA, "*fund model*.xlsx")
 
 
 def portfolio_metrics() -> Path:

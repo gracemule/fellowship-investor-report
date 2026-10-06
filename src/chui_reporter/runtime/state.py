@@ -17,6 +17,7 @@ from psycopg.types.json import Jsonb
 from ..agent.store import Store
 
 WS = "default"
+LABEL_MAX = 600
 ACTIVE = ("queued", "running", "waiting_user", "waiting_data")
 
 
@@ -71,11 +72,14 @@ def emit(store: Store, kind: str, label: str = "", *, run_id: str | None = None,
             session_id = _session_provider()
         except Exception:               # noqa: BLE001 - an event is never lost for want of a session
             session_id = None
+    detail = dict(detail or {})
+    if len(label) > LABEL_MAX and "text" not in detail:
+        detail["text"] = label                  # the feed shows `text` when there is one: nothing a person wrote or read is cut
     with store.conn() as c:
         row = c.execute(
             f"INSERT INTO {store._t('event')} (workspace_id, run_id, kind, label, chapter, detail, session_id) "
             f"VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-            (ws, run_id, kind, label[:600], chapter, Jsonb(detail or {}), session_id)).fetchone()
+            (ws, run_id, kind, label[:LABEL_MAX], chapter, Jsonb(detail), session_id)).fetchone()
     return row["id"]
 
 
@@ -118,11 +122,11 @@ def last_event_id(store: Store, ws: str = WS) -> int:
 
 
 def create_run(store: Store, kind: str, instruction: str, thread_id: str, ws: str = WS,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, period: str | None = None) -> str:
     rid = uuid.uuid4().hex[:12]
     with store.conn() as c:
-        c.execute(f"INSERT INTO {store._t('run')} (id, workspace_id, thread_id, kind, instruction, status, session_id) "
-                  f"VALUES (%s,%s,%s,%s,%s,'queued',%s)", (rid, ws, thread_id, kind, instruction, session_id))
+        c.execute(f"INSERT INTO {store._t('run')} (id, workspace_id, thread_id, kind, instruction, status, session_id, period) "
+                  f"VALUES (%s,%s,%s,%s,%s,'queued',%s,%s)", (rid, ws, thread_id, kind, instruction, session_id, period))
     return rid
 
 
@@ -139,10 +143,11 @@ def active_run(store: Store, ws: str = WS) -> dict | None:
     return _iso(r) if r else None
 
 
-def latest_run(store: Store, ws: str = WS) -> dict | None:
+def latest_run(store: Store, ws: str = WS, period: str | None = None) -> dict | None:
+    """The newest run, of one quarter if given."""
     with store.conn() as c:
-        r = c.execute(f"SELECT * FROM {store._t('run')} WHERE workspace_id=%s "
-                      f"ORDER BY created_at DESC LIMIT 1", (ws,)).fetchone()
+        r = c.execute(f"SELECT * FROM {store._t('run')} WHERE workspace_id=%s AND (%s::text IS NULL OR period=%s) "
+                      f"ORDER BY created_at DESC LIMIT 1", (ws, period, period)).fetchone()
     return _iso(r) if r else None
 
 
@@ -282,33 +287,43 @@ def version_blob(store: Store, version: int, which: str) -> bytes | None:
 # ---- one-query snapshot -------------------------------------------------------------------
 
 
-def snapshot_rows(store: Store, ws: str = WS) -> dict:
+def snapshot_rows(store: Store, ws: str = WS, period: str | None = None) -> dict:
     """Everything the interface needs in a single round trip.
 
     The database is a network hop away (and on a free tier, a long one), so building the
     page state from a dozen small queries would make every refresh slow. This reads it all at once.
+    Everything quarter-specific (files, runs, versions) is read for `period`; the brand kit is shared by all quarters.
     """
+    from .. import period as pr
+
     t = store._t
+    if period is None:
+        period = workspace(store, ws)["period"]
     sql = f"""
     SELECT
       (SELECT to_jsonb(w) FROM {t('workspace')} w WHERE w.id=%(ws)s) AS workspace,
-      coalesce((SELECT jsonb_agg(path ORDER BY path) FROM {t('source_file')}
-                WHERE workspace_id=%(ws)s AND status='present'), '[]'::jsonb) AS paths,
+      (SELECT to_jsonb(w) FROM {t('workspace')} w WHERE w.id=%(period)s) AS files_ws,
+      coalesce((SELECT jsonb_agg(DISTINCT path ORDER BY path) FROM {t('source_file')}
+                WHERE workspace_id = ANY(%(files)s) AND status='present'), '[]'::jsonb) AS paths,
       (SELECT to_jsonb(r) FROM (SELECT * FROM {t('run')} WHERE workspace_id=%(ws)s
+                                AND (period=%(period)s OR status = ANY(%(active)s))
                                 ORDER BY (status = ANY(%(active)s)) DESC, created_at DESC LIMIT 1) r) AS run,
       coalesce((SELECT jsonb_agg(to_jsonb(q) ORDER BY q.created_at) FROM {t('question')} q
-                WHERE q.status='open'), '[]'::jsonb) AS questions,
+                WHERE q.status='open' AND q.run_id IN (SELECT id FROM {t('run')} WHERE status = ANY(%(active)s))), '[]'::jsonb) AS questions,
       coalesce((SELECT jsonb_agg(to_jsonb(v) ORDER BY v.version DESC) FROM
                 (SELECT version, pages, summary, created_at FROM {t('report_version')}
-                 WHERE report_id = 'fund-i-' || (SELECT period FROM {t('workspace')} WHERE id=%(ws)s)
+                 WHERE report_id = 'fund-i-' || %(period)s
                  ORDER BY version DESC LIMIT 8) v), '[]'::jsonb) AS versions,
+      (SELECT to_jsonb(v) FROM (SELECT version, pages, created_at FROM {t('report_version')}
+                                WHERE report_id = 'fund-i-' || %(prev)s ORDER BY version DESC LIMIT 1) v) AS prior_version,
       (SELECT coalesce(max(id),0) FROM {t('event')} WHERE workspace_id=%(ws)s) AS last_event,
       coalesce((SELECT jsonb_agg(to_jsonb(x)) FROM {t('service_state')} x), '[]'::jsonb) AS service_state,
       coalesce((SELECT jsonb_agg(to_jsonb(u)) FROM {t('service_usage')} u WHERE u.month=%(month)s), '[]'::jsonb) AS service_usage
     """
     with store.conn() as c:
         from ..services import usage as _usage
-        args = {"ws": ws, "active": list(ACTIVE), "month": _usage.month()}
+        args = {"ws": ws, "period": period, "prev": pr.Period.parse(period).prev.code, "files": [period, "shared"],
+                "active": list(ACTIVE), "month": _usage.month()}
         row = c.execute(sql, args).fetchone()
         if row["workspace"] is None:
             c.execute(f"INSERT INTO {t('workspace')} (id) VALUES (%s) ON CONFLICT DO NOTHING", (ws,))

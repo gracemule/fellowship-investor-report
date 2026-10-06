@@ -22,6 +22,14 @@ class _Store:
 class _Runtime:
     store = _Store()
 
+    def period(self):
+        from chui_reporter import period as pr
+
+        return pr.Period(2026, 2)
+
+    def files_ws(self):
+        return "2026Q2"
+
     def shutdown(self):
         pass
 
@@ -147,3 +155,8 @@ def test_the_converter_token_is_shown_only_as_a_fingerprint_that_matches_the_con
     assert f"fingerprint {fingerprint('a-shared-secret-value')}" in line and "a-shared-secret-value" not in line
     quoted = report({"CHUI_CONVERTER_TOKEN": '"a-shared-secret-value"'})
     assert f"fingerprint {fingerprint('a-shared-secret-value')}" in quoted, "quotes do not change what is compared"
+
+
+def test_the_app_root_answers_head_for_uptime_monitors(client):
+    assert client.head("/").status_code == 200
+    assert client.get("/").status_code == 200

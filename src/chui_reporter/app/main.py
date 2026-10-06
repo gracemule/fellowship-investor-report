@@ -99,7 +99,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         rt_of(request).store.status_counts()          # the database answers
         return {"ok": True, "database": True}
 
-    @app.get("/")
+    @app.api_route("/", methods=["GET", "HEAD"])
     def index():
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -203,16 +203,28 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             out.append({"path": path, "sha256": sha, "size": int(f.get("size", 0)), "mtime": f.get("mtime")})
         return out
 
+    def _quarter(rt: Runtime, claimed) -> str:
+        """The quarter a sync belongs to. The browser says which quarter it chose the folder for; if the server has moved on
+        (another tab, another person), the files are refused rather than filed under the wrong quarter."""
+        code = rt.period().code
+        if claimed and pr.Period.parse(str(claimed)).code != code:
+            raise HTTPException(409, f"The quarter changed to {rt.period().label}. Choose the folder again for that quarter.")
+        return code
+
     @app.post("/api/sync/plan")
     async def sync_plan(request: Request, body: dict = Body(...)):
+        rt = rt_of(request)
+        ws = _quarter(rt, body.get("period"))
         manifest = _clean_manifest(body.get("manifest"))
-        need = await run_in_threadpool(ws_sync.plan, rt_of(request).store, manifest)
+        need = await run_in_threadpool(ws_sync.plan, rt.store, manifest, ws)
         too_big = [m["path"] for m in manifest if m["size"] > ws_sync.MAX_FILE_BYTES]
         return {"need": [p for p in need if p not in too_big], "too_large": too_big,
                 "limit_mb": ws_sync.MAX_FILE_BYTES // 1_000_000}
 
     @app.put("/api/sync/file")
-    async def sync_file(request: Request, path: str, sha256: str, mtime: float | None = None):
+    async def sync_file(request: Request, path: str, sha256: str, mtime: float | None = None, period: str | None = None):
+        rt = rt_of(request)
+        ws = _quarter(rt, period)
         if not HEX64.match(sha256.lower()):
             raise HTTPException(400, "bad sha256")
         declared = int(request.headers.get("content-length") or 0)
@@ -220,7 +232,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             raise HTTPException(413, "file too large")
         data = await request.body()
         try:
-            changed = await run_in_threadpool(ws_sync.put_file, rt_of(request).store, path, data, sha256.lower(), mtime)
+            changed = await run_in_threadpool(ws_sync.put_file, rt.store, path, data, sha256.lower(), mtime, ws)
         except ws_sync.SyncError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"stored": changed}
@@ -228,13 +240,47 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
     @app.post("/api/sync/commit")
     async def sync_commit(request: Request, body: dict = Body(...)):
         rt = rt_of(request)
+        ws = _quarter(rt, body.get("period"))
         manifest = _clean_manifest(body.get("manifest"))
+        folder = str(body.get("folder") or "").strip()[:120] or None
         try:
-            changes = await run_in_threadpool(ws_sync.commit, rt.store, manifest)
+            changes = await run_in_threadpool(ws_sync.commit, rt.store, manifest, ws, folder)
         except ws_sync.SyncError as exc:
             raise HTTPException(409, str(exc)) from exc
         result = await run_in_threadpool(rt.on_sync, changes)
         return {"changes": changes.as_dict(), **result}
+
+    @app.post("/api/sources/clear")
+    async def sources_clear(request: Request, body: dict = Body(default={})):
+        """Delete the files synced for this quarter (the wrong folder was chosen). The brand kit and attached files stay."""
+        rt = rt_of(request)
+        if state.active_run(rt.store):
+            raise HTTPException(409, "Wait for the agent to finish, or stop it, before removing files.")
+        ws = _quarter(rt, body.get("period"))
+        n = await run_in_threadpool(ws_sync.clear_quarter, rt.store, ws)
+        rt._pending = ws_sync.Changes()
+        await run_in_threadpool(state.emit, rt.store, "source.cleared", f"Removed the {n} synced files for {rt.period().label}",
+                                detail={"count": n, "period": ws})
+        return {"removed": n, "state": await run_in_threadpool(rt.snapshot_state)}
+
+    @app.post("/api/sources/move")
+    async def sources_move(request: Request, body: dict = Body(...)):
+        """Move the files synced for this quarter to another quarter (they were synced under the wrong one)."""
+        rt = rt_of(request)
+        if state.active_run(rt.store):
+            raise HTTPException(409, "Wait for the agent to finish, or stop it, before moving files.")
+        ws = _quarter(rt, body.get("period"))
+        try:
+            target = pr.Period.parse(str(body.get("to", "")))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if target.code == ws:
+            raise HTTPException(400, "Choose a different quarter to move them to.")
+        n = await run_in_threadpool(ws_sync.move_quarter, rt.store, ws, target.code)
+        rt._pending = ws_sync.Changes()
+        await run_in_threadpool(state.emit, rt.store, "source.moved",
+                                f"Moved {n} files from {rt.period().label} to {target.label}", detail={"count": n, "to": target.code})
+        return {"moved": n, "to": target.code, "state": await run_in_threadpool(rt.snapshot_state)}
 
     # ---------------------------------------------------------------- run controls
 
@@ -252,7 +298,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
 
     def _attachments(rt: Runtime, paths) -> list[dict]:
         """Resolve attachment paths the client names to stored files (and refuse anything else)."""
-        have = {a["path"]: a for a in ws_sync.attachments(rt.store)}
+        have = {a["path"]: a for a in ws_sync.attachments(rt.store, rt.files_ws())}
         out = []
         for p_ in (paths or [])[:8]:
             if p_ in have:
@@ -265,6 +311,12 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         rt = rt_of(request)
         text = str(body.get("text", ""))[:2000]
         atts = await run_in_threadpool(_attachments, rt, body.get("attachments"))
+        note_id = body.get("note")
+        if note_id is not None:
+            try:
+                return await run_in_threadpool(rt.reply_to_note, int(note_id), text, atts)
+            except LookupError as exc:
+                raise HTTPException(404, "That review note no longer exists.") from exc
         return await run_in_threadpool(rt.steer, text, atts)
 
     @app.put("/api/attachments")
@@ -277,7 +329,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         if not data:
             raise HTTPException(400, "empty file")
         try:
-            info = await run_in_threadpool(ws_sync.put_attachment, rt.store, name, data)
+            info = await run_in_threadpool(ws_sync.put_attachment, rt.store, name, data, rt.files_ws())
         except ws_sync.SyncError as exc:
             raise HTTPException(415 if "cannot be attached" in str(exc) else 400, str(exc)) from exc
         return info
@@ -285,7 +337,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
     @app.delete("/api/attachments")
     async def unattach(request: Request, path: str):
         try:
-            ok = await run_in_threadpool(ws_sync.remove_attachment, rt_of(request).store, path)
+            ok = await run_in_threadpool(ws_sync.remove_attachment, rt_of(request).store, path, rt_of(request).files_ws())
         except ws_sync.SyncError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"ok": ok}
@@ -323,12 +375,10 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             p = pr.Period.parse(str(body.get("period", "")))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if state.active_run(rt.store):
-            raise HTTPException(409, "Wait for the current run to finish before changing the quarter.")
-        await run_in_threadpool(state.update_workspace, rt.store, period=p.code)
-        rt.ws_row(fresh=True)
-        await run_in_threadpool(state.emit, rt.store, "period", f"Reporting period set to {p.label}")
-        return await run_in_threadpool(rt.snapshot_state)
+        try:
+            return await run_in_threadpool(rt.set_period, p.code)
+        except RuntimeError as exc:
+            raise HTTPException(409, "Wait for the current run to finish before changing the quarter.") from exc
 
     @app.post("/api/settings")
     async def settings(request: Request, body: dict = Body(...)):
@@ -465,6 +515,10 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         blob = await run_in_threadpool(state.version_blob, rs, v, fmt)
         if not blob:
             raise HTTPException(404, "not available")
+        if fmt == "docx":
+            from ..render.docmeta import blank_docx_author
+
+            blob = blank_docx_author(blob)              # the downloaded Word file names no author, whatever it was stored with
         P = rt.period()
         name = f"Chui Ventures Fund I - {P.label} Investor Report.{fmt}"
         mt = "application/pdf" if fmt == "pdf" else \
@@ -488,11 +542,33 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"{type(exc).__name__}: {exc}") from exc
 
+    def _note(r: dict) -> dict:
+        return {"id": r["id"], "area": r["area"], "severity": r["severity"], "text": r["text"], "status": r.get("status") or "open",
+                "resolution": r.get("resolution"), "reply": r.get("reply"),
+                "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None}
+
     @app.get("/api/notes")
     async def notes(request: Request):
         rs = rt_of(request).report_store()
         rows = await run_in_threadpool(rs.review_notes)
-        return {"notes": [{"area": r["area"], "severity": r["severity"], "text": r["text"]} for r in rows]}
+        return {"notes": [_note(r) for r in rows]}
+
+    @app.post("/api/notes/{note_id}/resolve")
+    async def note_resolve(request: Request, note_id: int, body: dict = Body(default={})):
+        rs = rt_of(request).report_store()
+        row = await run_in_threadpool(rs.resolve_review_note, note_id, str(body.get("resolution", "")))
+        if not row:
+            raise HTTPException(404, "no such note")
+        return {"note": _note(row)}
+
+    @app.post("/api/notes/{note_id}/reopen")
+    async def note_reopen(request: Request, note_id: int):
+        rs = rt_of(request).report_store()
+        row = await run_in_threadpool(rs.reopen_review_note, note_id)
+        if not row:
+            raise HTTPException(404, "no such note")
+        return {"note": _note(row)}
 
     # ---------------------------------------------------------------- brand assets (from the synced Branding folder)
 
@@ -508,8 +584,9 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
 
         def fetch():
             with store.conn() as c:
-                return c.execute(f"SELECT content FROM {store._t('source_file')} WHERE workspace_id='default' "
-                                 f"AND path=%s AND status='present'", (safe,)).fetchone()
+                return c.execute(f"SELECT content FROM {store._t('source_file')} WHERE workspace_id = ANY(%s) "
+                                 f"AND path=%s AND status='present' ORDER BY workspace_id = %s DESC LIMIT 1",
+                                 ([ws_sync.SHARED, ws_sync.WORKSPACE], safe, ws_sync.SHARED)).fetchone()
 
         row = await run_in_threadpool(fetch)
         if not row:

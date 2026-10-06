@@ -23,6 +23,9 @@ function needsList(items) {
     c.hint, ' ', h('code', {}, c.folder + '/'))));
 }
 
+// The agent's reason for asking is there when wanted, not in the way: one line, the rest a click away.
+const why = (text) => (text ? h('details', { class: 'why' }, h('summary', {}, 'Why it matters'), h('p', { class: 'detail' }, text)) : null);
+
 function questionView(q, S) {
   const ask = q.kind === 'sources';
   if (ask) {
@@ -30,10 +33,9 @@ function questionView(q, S) {
     return { key: 'q:' + q.id, nodes: [
       eyebrow('Waiting for files', 'ask'),
       h('h1', { class: 'headline small' }, `The agent needs ${list(slots.map((s) => s.label.toLowerCase()))}`),
-      q.why && h('p', { class: 'detail' }, q.why),
-      needsList(slots),
+      why(q.why),
       h('p', { class: 'detail faint' }, model.folder.name
-        ? `Add ${slots.length > 1 ? 'them' : 'it'} to “${model.folder.name}”. The agent carries on by itself when ${slots.length > 1 ? 'they appear' : 'it appears'}.`
+        ? `Add ${slots.length > 1 ? 'them' : 'it'} to “${model.folder.name}” (or attach ${slots.length > 1 ? 'them' : 'it'} below). The agent carries on by itself. The list is under Sources.`
         : 'Choose your folder, or attach them in the box below.'),
       h('div', { class: 'actions' },
         model.folder.name ? link('Check the folder now', () => folder.checkNow()) : primary('Choose folder', pickOrReconnect),
@@ -44,7 +46,7 @@ function questionView(q, S) {
   return { key: 'q:' + q.id, nodes: [
     eyebrow('A question for you', 'ask'),
     h('h1', { class: 'headline small' }, q.prompt),
-    q.why && h('p', { class: 'detail' }, q.why),
+    why(q.why),
     (q.options || []).length ? h('div', { class: 'choices' }, q.options.map((o) =>
       h('button', { class: 'choice', type: 'button', onclick: () => send(o) }, h('span', {}, o), svg(ICON.arrow, { size: 16 })))) : null,
     h('p', { class: 'detail faint' }, (q.options || []).length ? 'Or type your own answer in the box below.' : 'Type your answer in the box below.'),
@@ -84,8 +86,8 @@ function statusView(S) {
   const st = S.status, f = model.folder;
   const files = S.workspace.files;
   const offline = !model.online;
-  const tone = { working: 'working', current: 'ok', attention: 'bad', waiting_user: 'ask', waiting_data: 'ask', stale: 'ask', ready: 'ask' }[st.phase] || '';
-  const eb = offline ? 'Reconnecting' : { empty: 'Get started', needs_sources: 'Almost there', ready: 'Ready', working: 'Working',
+  const tone = { working: 'working', current: 'ok', attention: 'bad', waiting_user: 'ask', waiting_data: 'ask', stale: 'ask', ready: 'ask', empty_folder: 'ok' }[st.phase] || '';
+  const eb = offline ? 'Reconnecting' : { empty: `${S.period.label} · Get started`, empty_folder: `${S.period.label} · Folder connected`, needs_sources: 'Almost there', ready: 'Ready', working: 'Working',
     stale: 'Folder changed', attention: 'Needs attention', current: 'Up to date', waiting_data: 'Waiting', waiting_user: 'Waiting' }[st.phase] || '';
   const nodes = [eyebrow(eb, offline ? 'bad' : tone), h('h1', { class: 'headline' }, st.headline)];
   let detail = st.detail;
@@ -95,9 +97,9 @@ function statusView(S) {
   if (st.phase === 'stale' && S.pending?.sections?.length) detail = `The report does not yet reflect the new files. They affect ${list(S.pending.sections)}.`;
   if (detail) nodes.push(h('p', { class: 'detail', id: 'hero-detail' }, detail));
 
-  if (st.phase === 'needs_sources') {
-    nodes.push(needsList((S.coverage || []).filter((c) => c.state === 'missing')));
-    if (f.name && !f.needsPermission) nodes.push(h('p', { class: 'detail faint' }, `Add them to “${f.name}” and they will be picked up on their own.`));
+  if (st.phase === 'needs_sources' && f.name && !f.needsPermission) {
+    const n = (S.coverage || []).filter((c) => c.state === 'missing').length;
+    nodes.push(h('p', { class: 'detail faint' }, `Add ${n === 1 ? 'it' : 'them'} to “${f.name}” and ${n === 1 ? 'it is' : 'they are'} picked up on their own. The full list is under Sources.`));
   }
   if (st.phase === 'working') nodes.push(h('div', { class: 'bar indet' }, h('i')), h('p', { class: 'ctx', id: 'hero-ctx' }, ctxText()));
 
@@ -110,9 +112,10 @@ function statusView(S) {
   } else if (a?.id === 'stop') { /* the send button becomes Stop while the agent works */ }
   else if (a) actions.append(primary(a.label, () => post(a.id === 'resume' ? '/api/run/resume' : '/api/run', {})));
   if (st.phase === 'current' && connected) actions.append(link('Check the folder now', () => folder.checkNow()));
+  if (st.phase === 'current' && !connected && !f.needsPermission) actions.append(link(S.workspace.folder ? `Reconnect “${S.workspace.folder}”` : 'Choose folder', () => folder.pick()));
   if (f.needsPermission && st.phase !== 'empty') actions.append(link(`Reconnect to ${f.name}`, () => folder.reconnect()));
   if (actions.childElementCount) nodes.push(actions);
-  return { key: `s:${st.phase}:${st.headline}:${detail}:${a?.id}:${offline}:${connected}:${files ? 1 : 0}:${f.needsPermission}`, nodes };
+  return { key: `s:${S.period.code}:${st.phase}:${st.headline}:${detail}:${a?.id}:${offline}:${connected}:${files ? 1 : 0}:${f.needsPermission}`, nodes };
 }
 
 export function mountHero(root) {
@@ -137,7 +140,7 @@ export function mountHero(root) {
     if (d) d.textContent = syncDetail();
     if (b && p?.total) b.style.width = `${(p.done / p.total) * 100}%`;
   };
-  subscribe((what) => { if (what === 'state' || what === 'folder' || what === 'online') render(); });
+  subscribe((what) => { if (what === 'state' || what === 'folder' || what === 'online' || what === 'quarter') render(); });
   setInterval(() => { if (model.state?.status.phase === 'current') { key = ''; render(); } }, 30000);   // "4 min ago" stays true
   render();
 }

@@ -415,3 +415,52 @@ body:not(.booting) .viewer { animation: fadein .9s .1s ease both; }
 .sub.open .sub-body { grid-template-rows: 1fr; }
 .sub-body > div { overflow: hidden; min-height: 0; }
 .sub .steps { margin: 4px 0 6px 2px; }
+
+/* ---- a slimmer top section: the activity, sources and notes below it are the work, so they get the room ------------------- */
+.hero { padding: clamp(12px, 2.2vh, 22px) var(--pad) 12px; max-height: 58vh; }
+.hero .eyebrow { margin-bottom: 8px; }
+.hero .headline { font-size: clamp(21px, 1.8vw, 26px); line-height: 1.18; }
+.hero .headline.small { font-size: clamp(18px, 1.5vw, 21px); line-height: 1.22; }
+.hero .detail { margin-top: 7px; font-size: 14px; }
+.hero .actions { margin-top: 13px; gap: 18px; }
+.hero .bar { margin-top: 12px; }
+.hero .needs { margin-top: 14px; }
+.hero .needs li { padding: 8px 0; }
+
+/* ---- review notes you can answer and close ------------------------------------------------------------------------------ */
+.note-actions { display: flex; flex-wrap: wrap; gap: 4px 20px; margin-top: 10px; }
+.note-actions .link { font-size: 13px; }
+.note .reply { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--rule-2); font-size: 13.5px; color: var(--ink-2); }
+.note .reply b { font-weight: 500; color: var(--ink); }
+.note[data-status="answered"] .area::after { content: " · answered"; color: var(--ok); letter-spacing: 0; text-transform: none; font-weight: 400; }
+.note.resolved { opacity: .72; }
+.note.resolved .area .when { letter-spacing: 0; text-transform: none; font-weight: 400; }
+.resolved-group { padding-top: 14px; }
+.resolved-group .fold { margin-bottom: 8px; }
+.chip.reply { border-color: var(--accent); color: var(--accent-ink); }
+.chip.reply .nm { max-width: 260px; }
+
+/* ---- sources: a quarter's own files ------------------------------------------------------------------------------------- */
+.manage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding-bottom: 14px; }
+.manage-actions .link { font-size: 13.5px; }
+.link.danger { color: var(--bad); text-decoration-color: rgba(180, 35, 24, .35); }
+.link.danger:hover { color: var(--bad); text-decoration-color: var(--bad); }
+.manage-actions .confirm { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13.5px; color: var(--ink-2); }
+.slot[data-state="ready"] .state { white-space: nowrap; }
+
+/* ---- the quarter menu ------------------------------------------------------------------------------------------------------- */
+.menu .newq { align-items: flex-start; gap: 14px; }
+.menu .newq .l1 b { font-weight: 500; color: var(--ink); }
+.menu .newq small { display: block; margin-top: 3px; color: var(--muted); font-size: 12.5px; line-height: 1.4; max-width: 25em; }
+.menu .newq svg { color: var(--accent-ink); margin-top: 3px; flex: none; }
+
+/* ---- what the user said, and what it was about -------------------------------------------------------------------------- */
+.moment .about { display: block; margin-bottom: 3px; color: var(--accent-ink); font-size: 12px; }
+
+.hero .why { margin-top: 8px; }
+.hero .why summary { cursor: pointer; color: var(--muted); font-size: 13px; list-style: none; text-decoration: underline; text-decoration-color: var(--rule-2); text-underline-offset: 4px; width: fit-content; }
+.hero .why summary::-webkit-details-marker { display: none; }
+.hero .why[open] summary { color: var(--accent-ink); }
+.hero .why .detail { margin-top: 6px; }
+
+.src-head .small { white-space: nowrap; }

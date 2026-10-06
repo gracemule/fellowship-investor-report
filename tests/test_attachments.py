@@ -58,8 +58,8 @@ def test_attachments_are_not_listed_as_unrecognised_folder_files(store):
     assert sync.unplaced(store) == []
 
 
-def test_the_agent_is_told_what_was_attached_and_that_images_supply_no_figures():
+def test_the_agent_is_told_what_was_attached_and_that_the_users_figures_are_theirs_to_give():
     text = Runtime.with_attachments("Use the new macro numbers.", ["Uploads/gdp.csv", "Uploads/chart.png"])
     assert text.startswith("Use the new macro numbers.")
-    assert "Uploads/gdp.csv, Uploads/chart.png" in text and "image cannot be recorded" in text
+    assert "Uploads/gdp.csv, Uploads/chart.png" in text and "recorded as provided by the user" in text and "cannot be recorded" not in text
     assert Runtime.with_attachments("Hello", []) == "Hello"

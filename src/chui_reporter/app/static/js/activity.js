@@ -20,6 +20,7 @@ export function mountActivity(root) {
   const runs = new Map();
   const steerState = new Map();
   const subs = new Map();          // subagent id -> its block in the feed
+  const kinds = new Map();         // run id -> what kind of run it is (a message to the agent gets no block until it does work)
   let last = null, stick = true, hydrating = true;
   let programmaticUntil = 0;
   const nearBottom = () => root.scrollHeight - root.scrollTop - root.clientHeight < 90;
@@ -34,6 +35,7 @@ export function mountActivity(root) {
 
   function ensureRun(id, kind, iso) {
     if (runs.has(id)) return runs.get(id);
+    kind = kinds.get(id) || kind;
     for (const r of runs.values()) r.el.classList.add('collapsed');
     const inner = h('div', {});
     const title = h('span', {}, RUN_TITLES[kind] || 'Working');
@@ -158,31 +160,37 @@ export function mountActivity(root) {
     const d = ev.detail || {};
     const runOf = () => (ev.run_id && runs.get(ev.run_id)) || null;
     switch (ev.kind) {
-      case 'run.queued': case 'run.start': ensureRun(ev.run_id, d.kind || 'update', ev.created_at); break;
-      case 'run.prepared': line(ensureRun(ev.run_id, 'update', ev.created_at), ev.label, { cls: 'moment', time: ev.created_at }); break;
+      case 'run.queued': case 'run.start':
+        if (d.kind) kinds.set(ev.run_id, d.kind);
+        // A message to the agent shows as a conversation: its work gets a block only once it does some (see addStep).
+        if ((kinds.get(ev.run_id) || 'update') !== 'steer') ensureRun(ev.run_id, d.kind || 'update', ev.created_at);
+        break;
+      case 'run.prepared': { const pr = runs.get(ev.run_id); if (pr) line(pr, ev.label, { cls: 'moment', time: ev.created_at }); break; }
       case 'subagent.start': startSub(ev); break;
       case 'subagent.done': endSub(ev); break;
       case 'step': if (d.sub) subStep(ev); else addStep(ev); break;
       case 'step.done': if (d.sub) subStepDone(ev); else doneStep(ev); break;
       case 'note': {
         const r = runOf();
-        const body = md(ev.label);
+        const full = d.text || ev.label;                 // the whole reply, never the shortened summary
+        const body = md(full);
         const n = h('div', { class: 'agent-note' }, body);
-        if (ev.label.length > 420) {
+        if (full.length > 700) {
           n.classList.add('clamped');
           n.append(h('button', { class: 'fold', type: 'button', onclick: (e) => { n.classList.toggle('clamped'); e.target.textContent = n.classList.contains('clamped') ? 'Read all' : 'Show less'; } }, 'Read all'));
         }
         if (r) { r.inner.append(n); r.chapter = null; settle(); } else place(n);
         break;
       }
-      case 'question': line(runOf(), ev.label, { time: ev.created_at, small: d.why || undefined }); break;
-      case 'question.answered': line(runOf(), 'You answered: ' + ev.label.replace(/^SKIP:.*/, 'Decide for me'), { time: ev.created_at, cls: 'moment you' }); break;
+      case 'question': line(runOf(), d.text || ev.label, { time: ev.created_at, small: d.why || undefined }); break;
+      case 'question.answered': line(runOf(), 'You answered: ' + (d.text || ev.label).replace(/^SKIP:.*/, 'Decide for me'), { time: ev.created_at, cls: 'moment you' }); break;
       case 'steer': {
-        const state = h('small', { class: 'state' }, d.queued ? 'Queued · applies after the current step' : 'Started an update for this');
+        const state = h('small', { class: 'state' }, d.queued ? 'Queued · applies after the current step' : 'Sent');
         steerState.set(d.id, state);
         const atts = (d.attachments || []).length ? h('div', { class: 'chips inline' }, d.attachments.map((a) =>
           h('span', { class: 'chip' }, svg(ICON.doc, { size: 13 }), h('span', { class: 'nm' }, a.name)))) : null;
-        line(runOf(), [h('div', { class: 'quote' }, ev.label), atts, state], { time: ev.created_at, cls: 'moment you' });
+        const about = d.note ? h('small', { class: 'about' }, `About the review note “${d.note_area || ''}”`) : null;
+        line(runOf(), [about, h('div', { class: 'quote' }, d.text || ev.label), atts, state], { time: ev.created_at, cls: 'moment you' });
         break;
       }
       case 'steer.dropped': {
@@ -216,7 +224,10 @@ export function mountActivity(root) {
       }
       case 'run.end': {
         const r = runOf();
-        if (!r) break;
+        if (!r) {                                          // a conversation turn that did no work: only a failure needs saying
+          if (d.status === 'failed' || d.status === 'incomplete') line(null, ev.label || 'The agent could not reply.', { tone: 'warn', time: ev.created_at });
+          break;
+        }
         r.chapter = null;
         const bad = d.status === 'failed' || d.status === 'incomplete';
         if (d.status === 'done') { if (!r.inner.querySelector('.closing')) r.inner.append(h('div', { class: 'closing' }, h('b', {}, 'Done'))); }
@@ -233,7 +244,7 @@ export function mountActivity(root) {
         break;
       }
       case 'session.new': line(null, 'New session started. The report and its history carry over.', { time: ev.created_at }); break;
-      case 'waiting.sources': case 'period': line(null, ev.label, { time: ev.created_at }); break;
+      case 'waiting.sources': case 'period': case 'source.cleared': case 'source.moved': line(null, ev.label, { time: ev.created_at }); break;
       default: break;
     }
   }
@@ -242,7 +253,7 @@ export function mountActivity(root) {
   async function show(id, info) {
     const data = await get(`/api/history?n=400${id ? `&session=${encodeURIComponent(id)}` : ''}`);
     model.viewingSession = id || null;
-    clear(feed); runs.clear(); steerState.clear(); subs.clear(); last = null;
+    clear(feed); runs.clear(); steerState.clear(); subs.clear(); kinds.clear(); last = null;
     feed.append(empty);
     hydrating = true; feed.classList.add('no-anim'); stick = true;
     data.events.forEach((ev) => apply(ev, false));
@@ -257,6 +268,7 @@ export function mountActivity(root) {
 
   subscribe((what, data) => {
     if (what === 'event' && !model.viewingSession) apply(data.ev, data.live);
+    if (what === 'quarter') show(null);                  // a new quarter starts with an empty feed (its own conversation)
     if (what === 'hydrated') {
       hydrating = false; requestAnimationFrame(() => { feed.classList.remove('no-anim'); toBottom(); });
       const open = [...runs.values()];

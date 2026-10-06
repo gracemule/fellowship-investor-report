@@ -5,6 +5,9 @@
 // and the folder is re-scanned every few seconds while the tab is open. Only files whose size
 // or modified time changed are re-hashed, and only files the server does not already hold are
 // uploaded. Elsewhere (Safari, Firefox) the same flow runs from a one-off folder selection.
+//
+// A folder belongs to one quarter. The handle (and what was last sent) is remembered per quarter, every request says which
+// quarter it is for, and moving to another quarter starts with no folder connected: a new quarter needs its own folder.
 
 import { post, put } from './api.js';
 import { emit, model } from './live.js';
@@ -26,6 +29,8 @@ async function kv(mode, fn) {
   catch { return undefined; }
 }
 const kvGet = (k) => kv('readonly', (s) => s.get(k));
+const qcode = () => model.state?.period?.code || 'default';
+const hk = (name, code = qcode()) => `${name}:${code}`;
 const kvSet = (k, v) => kv('readwrite', (s) => s.put(v, k));
 const kvDel = (k) => kv('readwrite', (s) => s.delete(k));
 
@@ -73,6 +78,8 @@ export async function syncNow({ force = false } = {}) {
   if (!source) return;
   if (busy) { again = true; return; }
   busy = true;
+  const code = qcode();                                   // the quarter this folder was chosen for
+  const moved = () => qcode() !== code || !source;        // the quarter changed under us: stop, send nothing more
   try {
     set({ phase: 'scanning', error: null, progress: null });
     const entries = [];
@@ -99,20 +106,23 @@ export async function syncNow({ force = false } = {}) {
     const byPath = new Map(entries.map((e) => [e.path, e]));
     const manifest = entries.filter((e) => hashes.get(e.path)?.sha)
       .map((e) => ({ path: e.path, size: e.size, mtime: e.mtime, sha256: hashes.get(e.path).sha }));
-    const plan = await post('/api/sync/plan', { manifest });
+    if (moved()) return;
+    const plan = await post('/api/sync/plan', { manifest, period: code });
     const need = plan.need;
     if (need.length) {
       let sent = 0;
       set({ phase: 'uploading', progress: { done: 0, total: need.length } });
       await pool(need, 3, async (path) => {
+        if (moved()) return;
         const e = byPath.get(path), f = await e.file();
-        await put(`/api/sync/file?path=${encodeURIComponent(path)}&sha256=${hashes.get(path).sha}&mtime=${e.mtime}`, f);
+        await put(`/api/sync/file?path=${encodeURIComponent(path)}&sha256=${hashes.get(path).sha}&mtime=${e.mtime}&period=${encodeURIComponent(code)}`, f);
         set({ progress: { done: ++sent, total: need.length, current: path } });
       });
     }
+    if (moved()) return;
     set({ phase: 'committing', progress: null });
-    const res = await post('/api/sync/commit', { manifest });
-    persistHashes();
+    const res = await post('/api/sync/commit', { manifest, period: code, folder: source.name });
+    persistHashes(code);
     set({ phase: source.watch ? 'watching' : 'manual', checkedAt: Date.now(), tooLarge: [...tooLarge, ...(plan.too_large || [])] });
     if (tooLarge.length) toast(`${tooLarge.length} file${tooLarge.length > 1 ? 's are' : ' is'} over 60 MB and was skipped.`, 'warn');
     emit('synced', res);
@@ -125,7 +135,7 @@ export async function syncNow({ force = false } = {}) {
   }
 }
 
-const persistHashes = () => kvSet('hashes', Object.fromEntries(hashes));
+const persistHashes = (code = qcode()) => kvSet(hk('hashes', code), Object.fromEntries(hashes));
 
 function startWatching() {
   clearInterval(timer);
@@ -141,17 +151,28 @@ async function attach(src, h = null, { force = true } = {}) {
 }
 
 // ---- public -----------------------------------------------------------------------------------
-export async function init() {
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(); });
-  addEventListener('focus', () => syncNow());
+async function restore() {
   if (!F.supported) return;
-  const saved = await kvGet('handle');
+  const saved = await kvGet(hk('handle'));
   if (!saved) return;
-  const stored = await kvGet('hashes'); if (stored) hashes = new Map(Object.entries(stored));
+  const stored = await kvGet(hk('hashes')); if (stored) hashes = new Map(Object.entries(stored));
   let perm = 'prompt';
   try { perm = await saved.queryPermission({ mode: 'read' }); } catch { /* handle no longer valid */ }
   if (perm === 'granted') { handle = saved; await attach(fsSource(saved), saved, { force: false }); }
   else { handle = saved; set({ name: saved.name, needsPermission: true, phase: 'needs_permission' }); }
+}
+
+export async function init() {
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(); });
+  addEventListener('focus', () => syncNow());
+  await restore();
+}
+
+// The quarter changed (the server has already moved): drop this quarter's connection and pick up the new quarter's, if it has one.
+export async function switchQuarter() {
+  clearInterval(timer); source = null; handle = null; hashes = new Map(); again = false; busy = false;
+  set({ name: null, phase: 'none', needsPermission: false, progress: null, error: null, checkedAt: null });
+  await restore();
 }
 
 export async function pick() {
@@ -164,7 +185,8 @@ export async function pick() {
     try { h = await showDirectoryPicker({ id: 'chui-quarter', mode: 'read' }); }
     catch (e) { if (e.name === 'AbortError') return; throw e; }
     hashes = new Map();
-    await kvSet('handle', h);
+    await kvSet(hk('handle'), h);
+    await kvDel(hk('hashes'));
     return attach(fsSource(h), h);
   }
   const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true, webkitdirectory: true });
@@ -181,8 +203,21 @@ export async function reconnect() {
 
 export const checkNow = () => (source ? syncNow({ force: false }) : pick());
 
+// Disconnect this quarter's folder (and forget what was last sent for it).
 export async function forget() {
   clearInterval(timer); source = null; handle = null; hashes = new Map();
-  await kvDel('handle'); await kvDel('hashes');
-  set({ name: null, phase: 'none', needsPermission: false });
+  await kvDel(hk('handle')); await kvDel(hk('hashes'));
+  set({ name: null, phase: 'none', needsPermission: false, progress: null, error: null, checkedAt: null });
+}
+
+// Files were moved on the server from one quarter to another: the remembered folder moves with them.
+export async function moveSaved(from, to) {
+  const h = await kvGet(hk('handle', from)), hs = await kvGet(hk('hashes', from));
+  if (h) await kvSet(hk('handle', to), h);
+  if (hs) await kvSet(hk('hashes', to), hs);
+  await kvDel(hk('handle', from)); await kvDel(hk('hashes', from));
+  if (from === qcode()) {
+    clearInterval(timer); source = null; handle = null; hashes = new Map();
+    set({ name: null, phase: 'none', needsPermission: false, progress: null, error: null, checkedAt: null });
+  }
 }

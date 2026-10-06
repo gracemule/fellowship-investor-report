@@ -23,6 +23,7 @@ class Slot:
     unlocks: tuple[str, ...]      # report sections that depend on it (original keys)
     hint: str                     # what to put there, in plain words
     minimum: int = 1
+    durable: bool = False         # stands from quarter to quarter (the brand kit): uploaded once, never asked for again
 
 
 SLOTS: tuple[Slot, ...] = (
@@ -32,7 +33,7 @@ SLOTS: tuple[Slot, ...] = (
     Slot("lp_workpaper", "Mauritius LP workpapers", "Fund Financials",
          ("*chui ventures lp*.xlsx", "*lp*.xlsx"), True, ("2.1", "2.2", "4.1", "4.2"),
          "The Chui Ventures LP working papers (Excel) for the period."),
-    Slot("fund_model", "Fund model", "Portfolio Company Data", ("fund model*.xlsx",), True,
+    Slot("fund_model", "Fund model", "Portfolio Company Data", ("*fund model*.xlsx",), True,
          ("2.1", "2.2", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4"),
          "The fund model workbook with Portfolio Valuation and Summary Report sheets."),
     Slot("portfolio_metrics", "Portfolio metrics", "Portfolio Company Data",
@@ -45,9 +46,9 @@ SLOTS: tuple[Slot, ...] = (
     Slot("pipeline", "Subsequent events and pipeline", "Pipeline and subsequent events",
          ("*.pdf", "*.docx"), False, ("1.5",), "Facility drawdowns, approvals, signed letters."),
     Slot("brand_logos", "Brand logos", "Branding", ("cv_logo_*.png", "cv_icon_*.png"), True, (),
-         "The Chui Ventures logo and icon PNGs (the Branding folder)."),
+         "The Chui Ventures logo and icon PNGs (the Branding folder).", durable=True),
     Slot("brand_fonts", "Brand fonts", "Branding", ("larken*.ttf",), True, (),
-         "The Larken font files the report is typeset in (Branding/Fonts/Larken).", minimum=3),
+         "The Larken font files the report is typeset in (Branding/Fonts/Larken).", minimum=3, durable=True),
     Slot("macro", "Macroeconomic data", "Macro and Context", ("*",), False, ("3.1",),
          "Country indicators (GDP, inflation, policy rates, FX) for the markets you invest in."),
     Slot("gp_statement", "General Partner statement", "GP statement", ("*",), False, ("1.5",),
@@ -55,6 +56,13 @@ SLOTS: tuple[Slot, ...] = (
 )
 
 BY_ID = {s.id: s for s in SLOTS}
+DURABLE_FOLDERS = frozenset(s.folder.casefold() for s in SLOTS if s.durable)
+
+
+def is_durable(path: str) -> bool:
+    """Does this file belong to the brand kit and the like, which carry from quarter to quarter?"""
+    parts = path.replace("\\", "/").strip("/").split("/")
+    return len(parts) > 1 and parts[0].casefold() in DURABLE_FOLDERS
 
 
 def _norm(path: str) -> str:

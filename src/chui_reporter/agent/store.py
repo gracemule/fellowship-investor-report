@@ -203,6 +203,7 @@ CREATE INDEX IF NOT EXISTS event_ws_id ON {s}.event (workspace_id, id);
 ALTER TABLE {s}.event ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS usage JSONB;
+ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS period TEXT;
 CREATE INDEX IF NOT EXISTS event_session ON {s}.event (session_id, id);
 CREATE TABLE IF NOT EXISTS {s}.question (
     id           TEXT PRIMARY KEY,
@@ -240,15 +241,43 @@ CREATE TABLE IF NOT EXISTS {s}.review_note (
     status      TEXT NOT NULL DEFAULT 'open',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- A review note can be answered by the user (with more information) and resolved, so it is not there for ever.
+ALTER TABLE {s}.review_note ADD COLUMN IF NOT EXISTS resolution TEXT;
+ALTER TABLE {s}.review_note ADD COLUMN IF NOT EXISTS reply TEXT;
+ALTER TABLE {s}.review_note ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+ALTER TABLE {s}.review_note ADD COLUMN IF NOT EXISTS replied_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS {s}.migration (name TEXT PRIMARY KEY, done_at TIMESTAMPTZ NOT NULL DEFAULT now());
+-- Quarters have files, runs and notes of their own. Rows from before that split are assigned once: the brand kit to the
+-- shared store, other files and every run to the quarter they were made under.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM {s}.migration WHERE name = 'per-quarter-v1') THEN
+    UPDATE {s}.run r SET period = s.period FROM {s}.session s WHERE r.period IS NULL AND r.session_id = s.id;
+    UPDATE {s}.run SET period = coalesce((SELECT period FROM {s}.session ORDER BY created_at LIMIT 1),
+                                         (SELECT period FROM {s}.workspace WHERE id = 'default'), '2026Q2')
+      WHERE period IS NULL;
+    UPDATE {s}.source_file SET workspace_id = 'shared'
+      WHERE workspace_id = 'default' AND lower(path) LIKE 'branding/%' AND status = 'present'
+        AND NOT EXISTS (SELECT 1 FROM {s}.source_file x WHERE x.workspace_id = 'shared' AND x.path = {s}.source_file.path);
+    UPDATE {s}.source_file SET workspace_id = coalesce((SELECT period FROM {s}.workspace WHERE id = 'default'), '2026Q2')
+      WHERE workspace_id = 'default' AND status = 'present'
+        AND NOT EXISTS (SELECT 1 FROM {s}.source_file x
+                        WHERE x.workspace_id = coalesce((SELECT period FROM {s}.workspace WHERE id = 'default'), '2026Q2')
+                          AND x.path = {s}.source_file.path);
+    INSERT INTO {s}.migration (name) VALUES ('per-quarter-v1');
+  END IF;
+END $$;
 """
 
 
-# Fact statuses. Only the first two license a figure in the report:
+# Fact statuses. Only the first three license a figure in the report:
 #   extracted   read by code from a source cell/page, or verified against one
 #   derived     computed by code from other grounded facts
+#   provided    given by the user (typed in the conversation, or read from an image they attached): their word is the source,
+#               it is quoted and flagged for review where it cannot be checked mechanically
 #   claimed     asserted by the agent and NOT verified -- licenses nothing
 #   quarantined a source value that was an Excel error
-GROUNDING_STATUSES = ("extracted", "derived")
+GROUNDING_STATUSES = ("extracted", "derived", "provided")
 
 
 @dataclass
@@ -290,7 +319,7 @@ def _pool_for(url: str):
 @dataclass
 class Store:
     url: str | None = field(default=None, repr=False)  # holds a password: never in a repr
-    schema: str = "chui"
+    schema: str = field(default_factory=lambda: os.environ.get("CHUI_SCHEMA", "chui"))   # CHUI_SCHEMA runs an isolated copy beside the real data
     report_id: str = "chui-fund-i"
     _ready: bool = field(default=False, init=False, repr=False)
 
@@ -438,6 +467,16 @@ class Store:
         inspected = rendered and r["inspected"] is not None and r["inspected"] >= r["rendered"]
         return {"rendered": rendered, "inspected": inspected}
 
+    def content_changed_at(self):
+        """When a section, table or chart of this report last changed (None if there is none)."""
+        with self.conn() as c:
+            r = c.execute(
+                f"""SELECT GREATEST((SELECT max(updated_at) FROM {self._t('section')} WHERE report_id=%s),
+                                    (SELECT max(updated_at) FROM {self._t('tbl')} WHERE report_id=%s),
+                                    (SELECT max(updated_at) FROM {self._t('chart')} WHERE report_id=%s)) AS at""",
+                (self.report_id,) * 3).fetchone()
+        return r["at"] if r else None
+
     # -- review notes: about the data, never part of the document -----------
 
     def add_review_note(self, area: str, text: str, severity: str = "info") -> None:
@@ -449,12 +488,41 @@ class Store:
                       WHERE report_id=%s AND area=%s AND text=%s)""",
                 (self.report_id, area, severity, text, self.report_id, area, text))
 
-    def review_notes(self) -> list[dict]:
+    def review_notes(self, status: str | None = None) -> list[dict]:
+        """This report's notes: open first, then answered, then resolved; within a status, decisions before warnings."""
         with self.conn() as c:
+            q = f"SELECT * FROM {self._t('review_note')} WHERE report_id=%s"
+            args: list = [self.report_id]
+            if status:
+                q += " AND status=%s"
+                args.append(status)
             return list(c.execute(
-                f"SELECT * FROM {self._t('review_note')} WHERE report_id=%s "
-                f"ORDER BY CASE severity WHEN 'decision' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id",
-                (self.report_id,)))
+                q + " ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'answered' THEN 1 ELSE 2 END, "
+                    "CASE severity WHEN 'decision' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id", args))
+
+    def get_review_note(self, note_id: int) -> dict | None:
+        with self.conn() as c:
+            return c.execute(f"SELECT * FROM {self._t('review_note')} WHERE report_id=%s AND id=%s",
+                             (self.report_id, note_id)).fetchone()
+
+    def resolve_review_note(self, note_id: int, resolution: str = "") -> dict | None:
+        with self.conn() as c:
+            return c.execute(
+                f"UPDATE {self._t('review_note')} SET status='resolved', resolution=%s, resolved_at=now() "
+                f"WHERE report_id=%s AND id=%s RETURNING *", (resolution.strip()[:1000] or None, self.report_id, note_id)).fetchone()
+
+    def reopen_review_note(self, note_id: int) -> dict | None:
+        with self.conn() as c:
+            return c.execute(
+                f"UPDATE {self._t('review_note')} SET status='open', resolved_at=NULL, resolution=NULL "
+                f"WHERE report_id=%s AND id=%s RETURNING *", (self.report_id, note_id)).fetchone()
+
+    def answer_review_note(self, note_id: int, reply: str) -> dict | None:
+        """The user has given more information about a note: it waits for the agent to use it and resolve it."""
+        with self.conn() as c:
+            return c.execute(
+                f"UPDATE {self._t('review_note')} SET status='answered', reply=%s, replied_at=now() "
+                f"WHERE report_id=%s AND id=%s AND status<>'resolved' RETURNING *", (reply.strip()[:2000], self.report_id, note_id)).fetchone()
 
     def remove_review_notes(self, contains: str, area: str | None = None) -> int:
         """Delete this report's review notes whose text contains `contains` (case-insensitive)."""
@@ -469,10 +537,10 @@ class Store:
     def replace_review_notes(self, area: str, notes: list[tuple[str, str]], *, area_like: str | None = None,
                              also_text_like: tuple[str, ...] = ()) -> int:
         """Make `notes` ((text, severity) pairs) the whole of what is said about `area`: older notes whose area contains
-        `area_like` (default: the area itself), and any whose text contains one of `also_text_like`, are removed first. For notes that code derives from the ledger, so they
+        `area_like` (default: the area itself), and any whose text contains one of `also_text_like`, are removed first (only open ones: what the user has answered or resolved stays, and is not raised again). For notes that code derives from the ledger, so they
         are rewritten, never accumulated and never left contradicting the report. Returns how many were removed."""
         with self.conn() as c:
-            q = f"DELETE FROM {self._t('review_note')} WHERE report_id=%s AND (area ILIKE %s"
+            q = f"DELETE FROM {self._t('review_note')} WHERE report_id=%s AND status='open' AND (area ILIKE %s"
             args: list = [self.report_id, f"%{area_like or area}%"]
             for frag in also_text_like:
                 q += " OR text ILIKE %s"

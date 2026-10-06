@@ -180,7 +180,7 @@ class Runtime:
                 self.execute(rid)
             except Exception as exc:    # noqa: BLE001 - the worker must outlive any one run
                 try:
-                    state.update_run(self.store, rid, status="failed", error=str(exc)[:300])
+                    state.update_run(self.store, rid, status="failed", error=str(exc)[:1000])
                 except Exception:       # noqa: BLE001
                     pass
 
@@ -227,8 +227,53 @@ class Runtime:
         state.emit(self.store, "session.new", "New session", session_id=row["id"])
         return row
 
+    def files_ws(self) -> str:
+        """The workspace this quarter's files live in (its period code)."""
+        return self.period().code
+
+    def prior_info(self) -> dict | None:
+        """The previous quarter's report as built here (so a new quarter never asks for it), or None."""
+        prev = self.period().prev
+        rs = Store(url=self.store.url, schema=self.store.schema, report_id=f"fund-i-{prev.code}")
+        v = state.latest_version(rs)
+        return {"label": prev.label, "version": v["version"], "code": prev.code} if v else None
+
+    def prior_baseline(self) -> dict[str, bytes]:
+        """The previous quarter's rendered PDF, as the file the extractors look for, unless the user supplied their own."""
+        from ..workspace import slots as _slots
+
+        info = self.prior_info()
+        if not info:
+            return {}
+        paths = [r["path"] for r in ws_sync._present_all(self.store, self.files_ws())]
+        if _slots.slot_files(_slots.BY_ID["prior_report"], paths):
+            return {}
+        rs = Store(url=self.store.url, schema=self.store.schema, report_id=f"fund-i-{info['code']}")
+        blob = state.version_blob(rs, info["version"], "pdf")
+        if not blob:
+            return {}
+        return {f"Prior Period Baseline/{FUND_NAME} - {info['label']} Investor Report.pdf": blob}
+
     def coverage(self):
-        return ws_sync.coverage(self.store)
+        return ws_sync.coverage(self.store, workspace=self.files_ws(), prior=self.prior_info())
+
+    def set_period(self, code: str) -> dict:
+        """Move to another quarter. Each quarter is a clean slate: its own files, report, notes and conversation. Refused
+        while the agent is working."""
+        p = pr.Period.parse(code)
+        with self._lock:
+            if state.active_run(self.store):
+                raise RuntimeError("busy")
+            if self._timer:
+                self._timer.cancel()
+            self._steer.clear()
+            self._pending = ws_sync.Changes()
+            self._announced = ()
+            state.update_workspace(self.store, period=p.code)
+            self.ws_row(fresh=True)
+            self._rs, self._session = None, None
+        state.emit(self.store, "period", f"Reporting period set to {p.label}", detail={"period": p.code})
+        return self.snapshot_state()
 
     # ------------------------------------------------------------------ requests from the UI
 
@@ -316,7 +361,8 @@ class Runtime:
 
     def _create(self, kind: str, instruction: str) -> str:
         sess = self.session()
-        rid = state.create_run(self.store, kind, instruction, sess["thread_id"], session_id=sess["id"])
+        rid = state.create_run(self.store, kind, instruction, sess["thread_id"], session_id=sess["id"],
+                               period=self.period().code)
         self._q.put(rid)
         state.emit(self.store, "run.queued", "", run_id=rid, detail={"kind": kind})
         return rid
@@ -345,7 +391,7 @@ class Runtime:
         with self._lock:
             if state.active_run(self.store):
                 return {"ok": False, "reason": "already_running"}
-            last = state.latest_run(self.store)
+            last = state.latest_run(self.store, period=self.period().code)
             if not last or last["status"] not in ("failed", "incomplete", "stopped"):
                 return {"ok": False, "reason": "nothing_to_resume"}
         return {"ok": True, "run": self._create("resume", last.get("instruction") or "Continue the previous work.")}
@@ -358,10 +404,29 @@ class Runtime:
         names = ", ".join(paths)
         return ((text.strip() + "\n\n") if text.strip() else "") + (
             f"[The user attached: {names}. These are in your source folder; read them with read_pdf, "
-            f"read_text, the excel tools or look_at_image as appropriate. Figures that appear only in an "
-            f"image cannot be recorded or used.]")
+            f"read_text, the excel tools or look_at_image as appropriate. What they attach is a source: a figure in a "
+            f"file you can check is verified as usual; a figure only in an image is recorded as provided by the user "
+            f"(report_save_facts, source_file the image) and flagged for their review.]")
 
-    def steer(self, text: str, attachments: list[dict] | None = None) -> dict:
+    def reply_to_note(self, note_id: int, text: str, attachments: list[dict] | None = None) -> dict:
+        """The user gives more information about a review note. The note waits, marked as answered, until the agent has used
+        the information and resolved it (or the user does)."""
+        rs = self.report_store()
+        note = rs.get_review_note(note_id)
+        if not note:
+            raise LookupError(note_id)
+        text = text.strip()
+        if not text and not attachments:
+            return {"ok": False, "reason": "empty"}
+        rs.answer_review_note(note_id, text or "(attached files)")
+        context = (f"[This is about review note #{note_id}, \"{note['area']}\": \"{note['text'][:500]}\". The user is giving you "
+                   f"more information to settle it. Use it: a figure they give you is a source (record it as theirs with "
+                   f"report_save_facts, source_file 'user:message'), correct the report if it changes anything, then call "
+                   f"report_resolve_review_note({note_id}, a one-sentence resolution). If it is still not settled, say exactly "
+                   f"what else you need.]\n")
+        return self.steer(text, attachments, context=context, extra={"note": note_id, "note_area": note["area"]})
+
+    def steer(self, text: str, attachments: list[dict] | None = None, *, context: str = "", extra: dict | None = None) -> dict:
         """A message from the user while (or instead of) the agent working.
 
         While a run is active it is queued and delivered at the next clean step boundary; with no run
@@ -371,14 +436,12 @@ class Runtime:
         paths = [a["path"] for a in attachments]
         if not text and not paths:
             return {"ok": False, "reason": "empty"}
-        body = self.with_attachments(text or "I have attached these files. Use them where they are relevant.", paths)
+        body = context + self.with_attachments(text or "I have attached these files. Use them where they are relevant.", paths)
         sid = uuid.uuid4().hex[:8]
         with self._lock:
             active = state.active_run(self.store)
-            detail = {"id": sid, "queued": bool(active), "attachments": [
+            detail = {**(extra or {}), "id": sid, "queued": bool(active), "attachments": [
                 {"name": a["name"], "kind": a.get("kind", "document")} for a in attachments]}
-            if not active and state.latest_version(self.report_store()) is None:
-                return {"ok": False, "reason": "no_report"}
             state.emit(self.store, "steer", text or "(attached files)", run_id=active["id"] if active else None,
                        detail=detail)
             if active:
@@ -393,7 +456,7 @@ class Runtime:
         done = state.answer_question(self.store, qid, text)
         if not done:
             return {"ok": False, "reason": "already_answered"}
-        state.emit(self.store, "question.answered", text[:300], run_id=q["run_id"], detail={"qid": qid})
+        state.emit(self.store, "question.answered", text, run_id=q["run_id"], detail={"qid": qid})
         if not state.open_questions(self.store, q["run_id"]):
             state.requeue(self.store, q["run_id"])
             self._q.put(q["run_id"])
@@ -472,12 +535,8 @@ class Runtime:
         if self._prepare_files:
             src = self.workdir / "source"
             n = self.materialize_workspace()
-            try:
-                from ..render import converters
-
-                converters.get_converter(rs).prepare(src)       # local fonts for LibreOffice, font files for a hosted one
-            except Exception as exc:    # noqa: BLE001
-                raise RunFailed(f"The report cannot be turned into a PDF yet: {exc}", "converter") from exc
+            # The converter is checked when a report is rendered (render_report), not here: a run that only answers a
+            # question must never be refused because fonts or a converter are not ready.
             state.emit(self.store, "run.prepared", f"Working from {len([1 for _ in src.rglob('*') if _.is_file()])} files "
                        f"in your folder", run_id=run["id"], detail={"written": n})
         return rs
@@ -520,7 +579,7 @@ class Runtime:
         from ..render import report_writer
 
         src = self.workdir / "source"
-        n = ws_sync.materialize(self.store, src)
+        n = ws_sync.materialize(self.store, src, self.files_ws(), extra=self.prior_baseline())
         config.set_root(src)
         report_writer.OUT_DIR = self.workdir / "out"
         return n
@@ -617,9 +676,13 @@ class Runtime:
                 if v:               # a new session over a report that already exists: say so, once
                     text = (f"[Context: the {self.period().label} report already exists (version {v['version']}). Call "
                             f"report_outline to see what is in it before you change anything.]\n" + text)
+                elif run["kind"] == "steer":
+                    text = (f"[Context: the {self.period().label} report has not been built yet. If the user is only talking to "
+                            f"you, answer them in a sentence or two; start building only if they ask for it.]\n" + text)
             payload = None if (continuing and snap.next) else {"messages": [HumanMessage(content=text)]}
 
         guard, nudges, segments = LoopGuard(), run.get("nudges", 0), 0
+        content_before = rs.content_changed_at()            # to tell a conversation from work that has to be rendered
         while True:
             segments += 1
             agent = self._agent
@@ -638,7 +701,10 @@ class Runtime:
             if late:                          # a message that arrived after the last step: do not lose it
                 payload = {"messages": [HumanMessage(content="The user says: " + late)]}
                 continue
-            missing = unfinished(rs)
+            # The "render and inspect" check is for work on the report. A message to the agent that only got an answer
+            # (a greeting, a question) changed nothing, so it is never sent off to render something.
+            worked = run["kind"] != "steer" or rs.content_changed_at() != content_before
+            missing = unfinished(rs) if worked else []
             if guard.triggered >= 3:
                 raise RunFailed("The agent kept repeating the same step and was stopped. Your work is saved; "
                                 "tell it what to do differently, or resume.", "loop")
@@ -840,7 +906,7 @@ class Runtime:
                     self._limit_hit = True           # LangGraph's step-limit message: not the agent speaking
                     return None
                 if text.strip():
-                    state.emit(self.store, "note", text.strip()[:700], run_id=rid)
+                    state.emit(self.store, "note", text.strip(), run_id=rid)
                 return None
             steer = None
             for c in calls:

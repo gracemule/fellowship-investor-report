@@ -1,7 +1,7 @@
 """How a number becomes allowed in the report.
 
 The numeric gate trusts the fact ledger, so the ledger must not be something the
-agent can write whatever it likes into. Three ways in, and only these:
+agent can write whatever it likes into. Four ways in, and only these:
 
 1. RECORDED by code from a deterministic read. Provenance comes from the
    extractor, never from the model.
@@ -10,6 +10,11 @@ agent can write whatever it likes into. Three ways in, and only these:
    checked, the fact is stored as `claimed` and licenses nothing.
 3. DERIVED: computed by code from other grounded facts. The agent names the
    inputs and the arithmetic; it never types the result.
+4. PROVIDED: the user's own word is a source. A figure they typed in the conversation is accepted when the
+   agent quotes their message (and the quote really is in what they wrote); a figure the agent read from
+   an image they attached is accepted as theirs, and flagged for them to check, because nothing can verify it by
+   machine. The person who owns the data being unable to give it to the agent would make the agent useless
+   exactly when it is stuck.
 
 Without this, the gate only proves "the agent wrote this number down somewhere",
 and an invented figure could be grounded by saving it with an invented source.
@@ -18,6 +23,7 @@ and an invented figure could be grounded by saving it with an invented source.
 from __future__ import annotations
 
 import ast
+import io
 import operator
 import re
 from pathlib import Path
@@ -72,25 +78,102 @@ def _close(a: float, b: float) -> bool:
 
 def verify_claim(f: Fact, resolve, store: Store | None = None) -> tuple[bool, str]:
     """Does the cited source really contain this number?"""
+    ok, why, _ = verify_claim_ex(f, resolve, store)
+    return ok, why
+
+
+_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def verify_claim_ex(f: Fact, resolve, store: Store | None = None) -> tuple[bool, str, str]:
+    """(ok, why, status). The status a verified fact earns is 'extracted' when code found the figure in the source, and
+    'provided' when the user's own word is the source (typed by them, or read from an image they attached)."""
     if f.value is None:
-        return False, "no numeric value"
+        return False, "no numeric value", "claimed"
     if not f.source_file:
-        return False, "no source_file cited"
+        return False, "no source_file cited", "claimed"
+    if f.source_file.strip().lower().startswith("user:"):
+        ok, why = verify_user_claim(f, store)
+        return ok, why, "provided"
     if f.source_file.lower().startswith(("http://", "https://")):
         from ..services.web import verify_web_claim
 
-        return verify_web_claim(f, store)
+        ok, why = verify_web_claim(f, store)
+        return ok, why, "extracted"
     try:
         path: Path = resolve(f.source_file)
     except FileNotFoundError:
-        return False, f"cited file {f.source_file!r} not found"
+        return False, f"cited file {f.source_file!r} not found", "claimed"
 
     suffix = path.suffix.lower()
     if suffix in {".xlsx", ".xlsm"}:
-        return _verify_cell(f, path)
+        return (*_verify_cell(f, path), "extracted")
     if suffix == ".pdf":
-        return _verify_pdf(f, path)
-    return False, f"cannot verify against a {suffix or 'unknown'} file"
+        return (*_verify_pdf(f, path), "extracted")
+    if suffix in {".csv", ".txt", ".md", ".json"}:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:2_000_000]
+        if suffix == ".csv":        # cells, not raw lines: a comma between cells must not look like a thousands separator
+            import csv
+
+            text = "\n".join(" | ".join(row) for row in csv.reader(io.StringIO(text)))
+        return (*_verify_text(f, text, path.name), "extracted")
+    if suffix == ".docx":
+        return (*_verify_docx(f, path), "extracted")
+    if suffix in _IMAGES:
+        if "Uploads" in path.parts:
+            return (True, f"read from the image {path.name}, which you attached: it cannot be checked by machine, so it is "
+                          f"recorded as yours and flagged for your review", "provided")
+        return False, f"{path.name} is not an image the user attached in the conversation", "claimed"
+    return False, f"cannot verify against a {suffix or 'unknown'} file", "claimed"
+
+
+def _user_texts(store: Store | None) -> list[str]:
+    """What the user wrote in this quarter's conversations: messages, and answers to the agent's questions."""
+    if store is None:
+        return []
+    period = (store.report_id or "").removeprefix("fund-i-")
+    with store.conn() as c:
+        rows = list(c.execute(
+            f"SELECT label, detail FROM {store._t('event')} WHERE kind IN ('steer','question.answered') "
+            f"AND (session_id IS NULL OR session_id IN (SELECT id FROM {store._t('session')} WHERE period=%s)) "
+            f"ORDER BY id DESC LIMIT 400", (period,)))
+    return [str((r["detail"] or {}).get("text") or r["label"] or "") for r in rows]
+
+
+def verify_user_claim(f: Fact, store: Store | None) -> tuple[bool, str]:
+    """A figure the user gave the agent in words. The agent must quote the user (source_cell); the quote must really be in
+    something they wrote, and must contain the figure."""
+    from ..services.web import norm
+
+    quote = (f.source_cell or "").strip()
+    if len(quote) < 6:
+        return False, "quote the user's own words in source_cell (the sentence that gives the figure)"
+    q = norm(quote)
+    if not any(q in norm(t) for t in _user_texts(store)):
+        return False, "that quotation is not in anything the user wrote in this quarter's conversation; quote their words exactly"
+    if not any(re.search(rf"(?<![\d.,]){re.escape(form)}(?![\d])", quote) for form in _pdf_forms(float(f.value))):
+        return False, f"the quotation does not contain {f.value!r}"
+    return True, f"stated by the user: “{quote[:140]}”"
+
+
+def _verify_text(f: Fact, text: str, name: str) -> tuple[bool, str]:
+    for form in _pdf_forms(float(f.value)):
+        if re.search(rf"(?<![\d.,]){re.escape(form)}(?![\d])", text):
+            return True, f"found {form!r} in {name}"
+    return False, f"{f.value!r} not found in {name}"
+
+
+def _verify_docx(f: Fact, path: Path) -> tuple[bool, str]:
+    try:
+        from docx import Document
+
+        doc = Document(str(path))
+        parts = [p.text for p in doc.paragraphs]
+        for t in doc.tables:
+            parts += [c.text for row in t.rows for c in row.cells]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"could not read {path.name}: {exc}"
+    return _verify_text(f, "\n".join(parts), path.name)
 
 
 def _verify_cell(f: Fact, path: Path) -> tuple[bool, str]:

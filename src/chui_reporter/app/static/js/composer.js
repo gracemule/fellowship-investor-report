@@ -6,10 +6,11 @@
 //
 //   a question is open  -> it is the answer
 //   the agent is working -> it is steering, delivered at the next step boundary (shown as queued)
-//   the agent is idle    -> it is a request for a change, which starts a short update
+//   the agent is idle    -> it is a message to the agent: it answers, or does what is asked
+//   a review note chosen -> it is more information about that note (the agent uses it and resolves the note)
 
 import { post } from './api.js';
-import { model, subscribe } from './live.js';
+import { model, refreshNotes, subscribe } from './live.js';
 import { $, ICON, clear, h, svg, toast } from './util.js';
 
 const MAX_FILES = 8;
@@ -39,10 +40,11 @@ export function mountComposer() {
   const placeholder = () => {
     const { q, busy, hasReport } = ctx();
     if (past()) return 'Read-only. Start a new session to continue.';
+    if (model.replyTo) return 'Give the agent more information about this note…';
     if (q) return q.kind === 'sources' ? 'Add a note, or attach the files…' : 'Type your answer…';
     if (busy) return 'Steer the agent…';
     if (hasReport) return 'Ask for a change to the report…';
-    return 'Attach files, or choose your folder on the left';
+    return 'Message the agent, or attach files…';
   };
   const past = () => !!model.viewingSession;
   const hasContent = () => !!input.value.trim() || files.some((f) => f.status === 'ready');
@@ -71,6 +73,9 @@ export function mountComposer() {
   // ---- attachments ---------------------------------------------------------------------------
   function renderChips() {
     clear(chips);
+    if (model.replyTo) chips.append(h('span', { class: 'chip reply', title: 'Your next message is about this review note' },
+      h('span', { class: 'nm' }, `About: ${model.replyTo.area}`),
+      h('button', { type: 'button', 'aria-label': 'Stop replying to this note', onclick: () => { model.replyTo = null; paint(); } }, '✕')));
     if (queued) chips.append(h('span', { class: 'chip queued', title: queued.text },
       h('span', { class: 'dot', 'data-s': 'working' }), h('span', { class: 'nm' }, `Queued · ${queued.text}`)));
     for (const f of files) {
@@ -137,13 +142,12 @@ export function mountComposer() {
     try {
       let r = { ok: true };
       if (q) await post(`/api/questions/${q.id}/answer`, { answer: text, attachments });
-      else if (!hasReport && !busy) {
-        if (text) { toast('There is no report yet to change. Attach files or choose your folder first.', 'warn'); return; }
-        await post('/api/attachments/commit', { attachments });
-      } else {
-        r = await post('/api/steer', { text, attachments });
-        if (r.ok === false) { toast(r.reason === 'no_report' ? 'There is no report yet to change.' : 'That could not be sent.', 'warn'); return; }
+      else if (!text && !hasReport && !busy && !model.replyTo) await post('/api/attachments/commit', { attachments });   // files alone join the sources
+      else {
+        r = await post('/api/steer', { text, attachments, note: model.replyTo?.id });
+        if (r.ok === false) { toast('That could not be sent.', 'warn'); return; }
         if (r.applied === 'next_step') queued = { id: r.id, text: text || `${attachments.length} file${attachments.length > 1 ? 's' : ''}` };
+        if (model.replyTo) { model.replyTo = null; refreshNotes().catch(() => {}); }
       }
       input.value = ''; files = []; grow();
     } catch (e) { toast(e.message, 'bad'); }
@@ -160,6 +164,8 @@ export function mountComposer() {
   });
 
   subscribe((what, data) => {
+    if (what === 'reply') { paint(); input.focus(); }
+    if (what === 'quarter') { queued = null; files = []; input.value = ''; grow(); paint(); }
     if (what === 'state' || what === 'session-view') { if (what === 'session-view') { queued = null; } paint(); }
     if (what === 'event' && ['steer.applied', 'steer.dropped'].includes(data.ev.kind) && queued && data.ev.detail?.id === queued.id) { queued = null; paint(); }
     if (what === 'event' && data.ev.kind === 'run.end') { queued = null; paint(); }

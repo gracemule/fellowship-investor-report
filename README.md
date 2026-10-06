@@ -80,6 +80,28 @@ installed at run time from the synced Branding folder; roughly 400 MB while conv
 marginal and the paid Starter instance is safe); or a Larken licence that permits embedding (`fsType` 0 or 8), after which
 the hosted converter would work unchanged. The font files themselves are never modified.
 
+## Quarters, sources and review notes
+
+**Each quarter is a clean slate.** Choosing another quarter shows that quarter's own folder, files, report, notes and
+conversation, and nothing of the previous one: the report area is blank until something is built, and the folder has to be
+connected again (a folder belongs to one quarter; every sync says which, and is refused if the server has moved on). Only
+things that do not change carry over: the brand kit (logos and fonts, stored once and never asked for again) and, on request,
+the previous quarter's report (the agent reads it with `prior_quarter_report`; it also stands in for the baseline PDF, so the
+new quarter never asks for it). Synced the wrong quarter? Sources has *Move to another quarter* and *Remove synced files*
+(the brand kit is never touched). A folder that is empty is shown as connected and empty, not as "nothing chosen".
+
+**What the user gives the agent is a source.** A figure typed in the conversation is accepted when the agent quotes the
+user's own sentence (checked against what they wrote); figures in attached PDFs, workbooks, Word files, CSV and text are
+verified in those files; a figure read from an attached image is accepted as the user's and flagged for their review, since
+nothing can verify an image by machine. These are recorded as `provided` facts and license the figure like any verified one.
+
+**Review notes can be closed.** Each note has *I have more information* (the next message is about that note; the agent uses it
+and resolves the note) and *Resolve*. Resolved notes fold away and are not raised again; notes derived from the data (the macro
+gaps) are rewritten from the ledger but never bring back one the user resolved.
+
+**A message is a conversation first.** "Hello" gets an answer, not a render; only work that changes the report is held to the
+render-and-inspect check. The agent's replies are stored and shown whole.
+
 ## Reliability
 
 | Situation | What happens |
@@ -169,7 +191,7 @@ src/chui_reporter/
   agent/       tools, ledger, store, LangGraph graph, provider factory, real model limits, deterministic table builders
   agents/      subagent engine (isolated context, budgets, verified claims) and the macro researchers
   runtime/     run manager, narrator, retries, loop guard, compaction, report versions, UI state
-  workspace/   folder sync and the source-slot registry
+  workspace/   folder sync (per quarter, plus the shared brand kit) and the source-slot registry
   render/      numeric gate, lint, branded Word renderer, LibreOffice conversion, charts
   extract/     source readers (workbooks, valuation reports, workpapers)
   app/         FastAPI app, auth, page images, static front end (vanilla ES modules)

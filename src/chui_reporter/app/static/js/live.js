@@ -6,6 +6,7 @@ import { debounce } from './util.js';
 
 export const model = {
   viewingSession: null,                 // null = the current session; otherwise an earlier one's id
+  replyTo: null,                        // the review note the next message is about: { id, area }
   state: null, report: null, notes: null, events: [], lastId: 0, online: true,
   folder: { name: null, supported: 'showDirectoryPicker' in window, phase: 'none', checkedAt: null,
             progress: null, error: null, needsPermission: false },
@@ -16,7 +17,7 @@ export const subscribe = (fn) => { subs.add(fn); return () => subs.delete(fn); }
 export const emit = (what, data) => subs.forEach((f) => f(what, data));
 
 const STATEFUL = new Set(['run.queued', 'run.start', 'run.end', 'question', 'question.answered', 'source.sync',
-  'version', 'waiting.sources', 'period', 'recovered', 'steer']);
+  'version', 'waiting.sources', 'period', 'recovered', 'steer', 'source.cleared', 'source.moved']);
 
 export async function refreshState() {
   model.state = await get('/api/state');
@@ -44,7 +45,8 @@ export function ingest(ev, { live = true } = {}) {
   if (!live) return;
   if (STATEFUL.has(ev.kind)) refreshSoon();
   if (ev.kind === 'version') { refreshReport().catch(() => {}); refreshNotes().catch(() => {}); }
-  if (ev.kind === 'step.done' && ev.detail?.tool === 'report_review_note') refreshNotes().catch(() => {});
+  if (ev.kind === 'step.done' && ['report_review_note', 'report_resolve_review_note', 'report_remove_review_note', 'build_macro_table'].includes(ev.detail?.tool)) refreshNotes().catch(() => {});
+  if (ev.kind === 'run.end') refreshNotes().catch(() => {});
 }
 
 let es;

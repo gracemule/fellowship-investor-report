@@ -24,7 +24,8 @@ workspaces (`y`, `m`) are unused and free for a later service.
 ## Keeping the services awake (UptimeRobot)
 
 A free service sleeps after ~15 minutes without traffic. Add two monitors, type HTTP(s), interval 5 minutes, expected status
-200 (the free plan sends HEAD requests, which both services accept):
+200 (the free plan sends HEAD requests, which both services accept). Both the bare address and `/healthz` answer HEAD and GET
+with 200, so a monitor pointed at either is up; `/healthz` is preferred because it does no work:
 
 * https://chui-reporter.onrender.com/healthz
 * https://chui-converter.onrender.com/healthz

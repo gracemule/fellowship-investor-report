@@ -22,7 +22,7 @@ from ..extract.valuation import Quarter, ValuationWorkbook, discover
 from ..extract.workbook import Workbook
 from ..extract.workpaper import StatementReader, capital_calls, derive_fund_metrics
 from ..validate.reconcile import reconcile
-from .ledger import DerivationError, derive_fact, derived, fact_from_value, verify_claim
+from .ledger import DerivationError, derive_fact, derived, fact_from_value, verify_claim, verify_claim_ex
 from . import builders as B
 from .store import Fact, Store
 
@@ -77,6 +77,12 @@ def list_sources() -> str:
             out.append(f"    {f}")
         if len(files) > 12:
             out.append(f"    ... and {len(files) - 12} more")
+    from ..workspace.slots import slot_for_path
+
+    others = sorted(p for p in paths if slot_for_path(p) is None and not p.startswith(("Uploads/", "Branding/")))
+    if others:
+        out.append("Other files the user provided (not matched to a standard source, but theirs: read any that may help):")
+        out.extend(f"    {f}" for f in others[:20])
     attached = sorted(p for p in paths if p.startswith("Uploads/"))
     if attached:
         out.append("Attached by the user in the conversation (read them if the user's message refers to them):")
@@ -89,9 +95,9 @@ def look_at_image(file_name: str, question: str = "Describe what this shows.") -
     """Look at an image the user attached (PNG, JPG, WEBP, GIF) and answer a question about it.
 
     Use it for layout, design and qualitative guidance (a screenshot of a problem, a sketch of what
-    they want, a photograph). Figures that appear only in an image CANNOT be recorded in the fact
-    ledger or used in the report, because nothing can verify them: if the user wants numbers from an
-    image, ask for the source document instead."""
+    they want, a photograph). If the user wants figures taken from an image, read them here and record
+    each with report_save_facts (source_file the image's name, source_cell where in the image): they are
+    recorded as the user's own and flagged for their review, since nothing can verify an image by machine."""
     import base64
     import io
 
@@ -117,8 +123,9 @@ def look_at_image(file_name: str, question: str = "Describe what this shows.") -
             {"type": "text", "text": question[:600]}, {"type": "image_url", "image_url": {"url": url}}])])
     except Exception as exc:  # noqa: BLE001
         return f"ERROR: could not look at {path.name}: {type(exc).__name__}: {exc}"
-    return (f"[{path.name}] {reply.content}\n(Figures read from an image are not verifiable and must not "
-            f"be recorded or used in the report.)")
+    return (f"[{path.name}] {reply.content}\n(Figures read from an image cannot be verified by machine. If the user "
+            f"attached it for its figures, record them with report_save_facts (source_file {path.name!r}); they are kept as "
+            f"the user's and flagged for their review.)")
 
 
 # --------------------------------------------------------------------------
@@ -589,6 +596,15 @@ def report_save_facts(facts_json: str) -> str:
     not check out, or cannot be checked, is stored as 'claimed' and does NOT
     license any figure in the report. Computed figures belong in
     report_derive_fact, never here.
+
+    THE USER IS A SOURCE. A figure they gave you is accepted, not refused for lacking a published source:
+    - typed in the conversation: source_file "user:message" and source_cell the user's own sentence, copied
+      exactly from what they wrote (it is checked against their messages and must contain the figure);
+    - in a file they attached (PDF, Excel, Word, CSV, text): cite it like any other file;
+    - only in an image they attached: read it with look_at_image, then source_file the image's name (under Uploads/)
+      and source_cell a short note of where in the image it is. It is recorded as the user's and flagged for their
+      review, because nothing can verify an image by machine.
+    These are recorded as 'provided' and license the figure like any verified fact.
     """
     try:
         payload = json.loads(facts_json)
@@ -616,15 +632,25 @@ def report_save_facts(facts_json: str) -> str:
     if problems:
         return "ERROR: nothing saved.\n  " + "\n  ".join(problems)
 
-    verified, claimed = [], []
+    verified, claimed, provided = [], [], []
     for f in facts:
-        ok, why = verify_claim(f, _resolve, get_store()) if f.value is not None else (False, "no numeric value")
-        f.status = "extracted" if ok else "claimed"
+        ok, why, status = verify_claim_ex(f, _resolve, get_store()) if f.value is not None else (False, "no numeric value", "claimed")
+        f.status = status if ok else "claimed"
         f.note = (f.note + " | " if f.note else "") + ("verified: " if ok else "UNVERIFIED: ") + why
         (verified if ok else claimed).append((f, why))
+        if ok and status == "provided":
+            provided.append(f)
     get_store().add_facts([f for f, _ in verified + claimed])
-    msg = (f"{len(verified)} verified and recorded; {len(claimed)} stored as CLAIMED "
-           f"(they do not license any figure).")
+    for f in provided:      # the user's own figures are transparent to them, and can be resolved from the Review tab
+        image = (f.source_file or "").lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+        get_store().add_review_note(
+            "Provided by you",
+            f"{f.label}: {_fmt(f.value)}{(' ' + f.unit) if f.unit and f.unit != 'USD' else ''} was taken from "
+            + (f"the image {Path(f.source_file).name} you attached. It cannot be checked by machine; please confirm it."
+               if image else "what you told the agent. It is used as you gave it."),
+            "warning" if image else "info")
+    msg = (f"{len(verified)} verified and recorded ({len(provided)} of them as provided by the user); {len(claimed)} stored "
+           f"as CLAIMED (they do not license any figure).")
     for f, why in claimed:
         msg += f"\n  not verified: {f.label!r}: {why}"
     return msg
@@ -737,6 +763,65 @@ def report_review_note(area: str, text: str, severity: str = "info") -> str:
         return "ERROR: severity must be decision, warning or info."
     get_store().add_review_note(area.strip()[:60], text.strip(), severity)
     return f"review note recorded under '{area}' ({severity}); it will not appear in the report."
+
+
+@tool
+def list_review_notes() -> str:
+    """The review notes still open or answered by the user, with their numbers. Use it before you raise a note (so you
+    do not repeat one) and when the user says they have given more information about one."""
+    rows = [r for r in get_store().review_notes() if (r.get("status") or "open") != "resolved"]
+    if not rows:
+        return "No open review notes."
+    out = []
+    for r in rows:
+        line = f"#{r['id']} [{r['severity']}, {r.get('status') or 'open'}] {r['area']}: {r['text']}"
+        if r.get("reply"):
+            line += f"\n    the user replied: {r['reply']}"
+        out.append(line)
+    return "\n".join(out)
+
+
+@tool
+def report_resolve_review_note(note_id: int, resolution: str) -> str:
+    """Close a review note that is settled: the user supplied what it asked for, a decision was made, or the gap was filled.
+    `resolution` is one plain sentence saying how (the user sees it). Do not resolve a note that is still true."""
+    row = get_store().resolve_review_note(int(note_id), resolution)
+    return f"note #{note_id} resolved." if row else f"ERROR: no review note #{note_id}."
+
+
+@tool
+def prior_quarter_report(what: str = "outline", key: str = "") -> str:
+    """Look back at the PREVIOUS quarter's report as it was built here. A new quarter starts empty: nothing from the last one
+    is carried into the report, so this is how you read it when a comparison needs it.
+
+    what: 'outline' (its sections and tables), 'section' (the text of section `key`, e.g. '1.1'), 'table' (the rows of table
+    `key`, e.g. 't_balance'). To use one of its figures in this quarter's report, record it with report_save_facts citing the
+    previous report's PDF under Prior Period Baseline (read_pdf finds it), like any other source."""
+    from .. import period as pr
+
+    prev = pr.current().prev
+    st = get_store()
+    ps = Store(url=st.url, schema=st.schema, report_id=f"fund-i-{prev.code}")
+    secs, tables = ps.sections(), ps.tables()
+    if not secs and not tables:
+        return (f"No {prev.label} report was built here. If the user supplied one, it is the PDF under Prior Period Baseline "
+                f"(read_pdf, prior_report_table).")
+    what = (what or "outline").strip().lower()
+    if what == "section":
+        for r in secs:
+            if r["key"] == key:
+                return f"{prev.label} section {r['key']} {r['title']}\n\n{(r['body'] or '')[:8000]}"
+        return f"ERROR: no section {key!r} in the {prev.label} report. Sections: {', '.join(r['key'] for r in secs)}"
+    if what == "table":
+        t = tables.get(key)
+        if not t:
+            return f"ERROR: no table {key!r} in the {prev.label} report. Tables: {', '.join(tables)}"
+        rows = [" | ".join(str(c) for c in r) for r in (t.get("rows") or [])[:60]]
+        return f"{prev.label} table {key}: {t.get('title', '')}\n" + " | ".join(t.get("columns") or []) + "\n" + "\n".join(rows)
+    out = [f"The {prev.label} report built here:"]
+    out += [f"  section {r['key']}: {r['title']}" for r in secs]
+    out += [f"  table {k}: {v.get('title', '')}" for k, v in tables.items()]
+    return "\n".join(out)
 
 
 @tool
@@ -1051,6 +1136,9 @@ ALL_TOOLS = [
     build_portfolio_tables,
     ledger_search,
     report_review_note,
+    list_review_notes,
+    report_resolve_review_note,
+    prior_quarter_report,
     report_remove_review_note,
     report_set_cover,
     report_remove_section,
