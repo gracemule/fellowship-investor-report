@@ -103,6 +103,8 @@ class Runtime:
         self._rs: Store | None = None
         self._ws: dict | None = None
         self._limit_hit = False
+        self._compact_seen: set = set()
+        self._run_id: str | None = None
         self._ws_at = 0.0
         self._session: dict | None = None
         self._session_at = 0.0
@@ -484,17 +486,26 @@ class Runtime:
         if self._agent_factory:
             return self._agent_factory(self._provider())
         from ..agent.graph import build_agent
-        hook = make_hook(int(DEFAULT_BUDGET * self._budget_factor), brief=lambda: store_brief(rs),
-                         on_compact=lambda s: state.emit(
-                             self.store, "compacted",
-                             f"Condensed the earlier conversation ({s['messages_before']} → {s['messages_after']} messages)",
-                             detail=s))
+        seen = self._compact_seen
+
+        def note(stats: dict) -> None:
+            # The hook runs before every model call; one line per kind of trimming per run is enough.
+            key = (self._run_id, stats["stage"])
+            if key in seen:
+                return
+            seen.add(key)
+            what = ("Condensed the earlier conversation to keep it within the model's limits"
+                    if stats["stage"] == 2 else "Shortened older tool output to keep the conversation within the model's limits")
+            state.emit(self.store, "compacted", what, run_id=self._run_id, detail=stats)
+
+        hook = make_hook(int(DEFAULT_BUDGET * self._budget_factor), brief=lambda: store_brief(rs), on_compact=note)
         return build_agent(self.saver, provider=self._provider(), pre_model_hook=hook)
 
     # -- the loop
 
     def _drive(self, run: dict) -> str:
         rid = run["id"]
+        self._run_id = rid
         rs = self._prepare(run)
         self._agent = agent = self._make_agent(rs)
         cfg = {"configurable": {"thread_id": run["thread_id"]}, "recursion_limit": SEGMENT_STEPS}

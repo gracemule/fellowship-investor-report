@@ -95,6 +95,8 @@ WORKFLOW
    figure you only saw in a search result cannot be recorded or used. Write the as-of period after each
    figure, use the same series for every country, and put a break in a series in a review note. If web search
    reports it is unavailable, call request_sources(['macro']) once and leave 3.1 out if the user does not supply it.
+   Use the publisher's own pages and PDFs, never a social media post. When you fill a gap you had noted, remove the
+   old note with report_remove_review_note so the notes never contradict the report.
 6. Your final message is for the reviewer: the decisions you need from them, and what you
    omitted and why (drawn from your review notes). Keep it short and plain.
 

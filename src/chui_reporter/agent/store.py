@@ -437,6 +437,16 @@ class Store:
                 f"ORDER BY CASE severity WHEN 'decision' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id",
                 (self.report_id,)))
 
+    def remove_review_notes(self, contains: str, area: str | None = None) -> int:
+        """Delete this report's review notes whose text contains `contains` (case-insensitive)."""
+        with self.conn() as c:
+            q = f"DELETE FROM {self._t('review_note')} WHERE report_id=%s AND text ILIKE %s"
+            args = [self.report_id, f"%{contains}%"]
+            if area:
+                q += " AND area=%s"
+                args.append(area)
+            return c.execute(q + " RETURNING id", args).rowcount
+
     def sections(self) -> list[dict]:
         with self.conn() as c:
             return list(c.execute(

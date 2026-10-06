@@ -35,8 +35,20 @@ def section_pages(pdf: Path, sections: list[dict]) -> dict[str, int]:
     from pypdf import PdfReader
 
     texts = [" ".join((p.extract_text() or "").split()).casefold() for p in PdfReader(str(pdf)).pages]
-    out, floor = {}, 2
-    for s in sorted(sections, key=lambda r: (r["ord"], r["key"])):
+
+    def numeric(key: str):
+        try:
+            return [int(x) for x in key.split(".")]
+        except ValueError:
+            return [10**6]
+
+    # Within a top-level section the headings run in order, so each search starts where the last one ended;
+    # across sections they do not (the agent's own `ord` values do not decide where a section lands).
+    out, floor, group = {}, 2, None
+    for s in sorted(sections, key=lambda r: numeric(r["key"])):
+        top = numeric(s["key"])[0]
+        if top != group:
+            group, floor = top, 2
         needle = " ".join(str(s["title"]).split()).casefold()
         for i in range(floor, len(texts)):
             if needle and needle in texts[i]:

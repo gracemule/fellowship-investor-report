@@ -731,6 +731,17 @@ def report_review_note(area: str, text: str, severity: str = "info") -> str:
 
 
 @tool
+def report_remove_review_note(contains: str, area: str = "") -> str:
+    """Remove review notes about a gap that you have since filled, so the reviewer is not left with notes
+    that contradict the report. `contains` is a distinctive phrase from the note (e.g. "Nigeria inflation
+    is omitted"). Only remove a note when the thing it describes is no longer true."""
+    if len(contains.strip()) < 12:
+        return "ERROR: give a distinctive phrase from the note (at least 12 characters) so no other note is removed."
+    n = get_store().remove_review_notes(contains.strip(), area.strip() or None)
+    return f"removed {n} review note(s)" if n else "no review note contains that phrase"
+
+
+@tool
 def report_set_cover(quarter: str = "", period: str = "", reporting_date: str = "",
                      jurisdiction: str = "Delaware / Mauritius", version: str = "v1.0") -> str:
     """Set the cover page fields. The title, fund name, logo, confidentiality line and
@@ -1030,6 +1041,7 @@ ALL_TOOLS = [
     build_portfolio_tables,
     ledger_search,
     report_review_note,
+    report_remove_review_note,
     report_set_cover,
     report_remove_section,
     inspect_pages,

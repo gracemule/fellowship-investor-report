@@ -127,7 +127,9 @@ def _pdf_forms(v: float) -> list[str]:
     forms |= {f"{a / 1e3:,.0f}", f"{a / 1e3:,.1f}", f"{a / 1e6:.2f}", f"{a / 1e6:.1f}"}
     forms |= {f"{a * 100:.2f}", f"{a * 100:.1f}", f"{a * 100:.0f}"}
     forms |= {f"{a / 1e9:.2f}", f"{a / 1e9:.1f}"}
-    return [x for x in forms if x not in {"0", "0.0", "0.00"}]
+    # Many sources (BCEAO, INSEE, most of continental Europe and francophone Africa) write 0,8 for 0.8.
+    forms |= {f.replace(".", ",") for f in forms if "." in f and "," not in f}
+    return [x for x in forms if x not in {"0", "0.0", "0.00", "0,0", "0,00"}]
 
 
 def _verify_pdf(f: Fact, path: Path) -> tuple[bool, str]:

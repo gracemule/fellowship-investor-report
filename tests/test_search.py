@@ -196,3 +196,107 @@ def test_a_verified_web_figure_licenses_prose_through_the_normal_save_path(store
     assert "1 verified" in out
     assert check_grounded("The policy rate stood at 9.75% (Sep-26).", store.grounded_values()) == []
     assert check_grounded("The policy rate stood at 10.5%.", store.grounded_values()) == ["10.5%"]
+
+
+# -- a page that is blocked to us is asked of a provider that can render it ---------------------
+
+
+class _Extractor:
+    def __init__(self, pages):
+        self.pages, self.asked = pages, []
+
+    def extract(self, urls):
+        self.asked.append(urls)
+        return "tavily", {u: self.pages.get(u, "") for u in urls}
+
+
+def _client(status, body="", ctype="text/html"):
+    return httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(status, text=body, headers={"content-type": ctype})))
+
+
+def test_a_blocked_page_is_read_through_the_extractor(store, monkeypatch):
+    monkeypatch.setattr(web, "_check_host", lambda h: None)
+    url = "https://blocked.example/rates"
+    ex = _Extractor({url: "Central Bank Rate | 9.75% " * 30})
+    page = web.fetch(store, url, router=ex, client=_client(403))
+    assert page["via"] == "tavily-extract" and ex.asked == [[url]]
+    assert "9.75%" in web.get_snapshot(store, url)["text"]
+
+
+def test_a_blocked_page_with_no_extractor_is_reported_not_invented(store, monkeypatch):
+    monkeypatch.setattr(web, "_check_host", lambda h: None)
+    with pytest.raises(web.FetchError, match="403"):
+        web.fetch(store, "https://blocked.example/x", router=None, client=_client(403))
+
+
+def test_an_empty_script_drawn_page_is_extracted_but_a_refused_address_never_is(store, monkeypatch):
+    monkeypatch.setattr(web, "_check_host", lambda h: None)
+    url = "https://spa.example/rates"
+    ex = _Extractor({url: "Policy rate 9.75% " * 40})
+    page = web.fetch(store, url, router=ex, client=_client(200, "<html><body><div id='app'></div><script>x()</script></body></html>"))
+    assert page["via"] == "tavily-extract"
+    monkeypatch.undo()
+    ex2 = _Extractor({})
+    with pytest.raises(web.Refused):
+        web.fetch(store, "http://127.0.0.1/admin", router=ex2)
+    assert ex2.asked == [], "an address we refuse is not handed to another service either"
+
+
+def test_comma_decimals_are_recognised_in_a_quotation(store, monkeypatch):
+    monkeypatch.setattr(web, "_check_host", lambda h: None)
+    page = "<html><body><p>L'inflation en glissement annuel ressort à 0,8 % en juin 2026.</p></body></html>" * 20
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=page, headers={"content-type": "text/html"})))
+    web.fetch(store, "https://bceao.example/note", client=client)
+    f = Fact("UEMOA inflation", 0.8, unit="percent", source_file="https://bceao.example/note",
+             source_cell="L'inflation en glissement annuel ressort à 0,8 % en juin 2026.")
+    assert web.verify_web_claim(f, store)[0]
+    wrong = Fact("x", 0.9, unit="percent", source_file="https://bceao.example/note", source_cell=f.source_cell)
+    assert not web.verify_web_claim(wrong, store)[0]
+
+
+def test_section_pages_follow_the_documents_numbering_not_the_agents_order_values():
+    """The macro section was given order 30 but prints between sections 2 and 4; its page was lost."""
+    import io
+
+    from pypdf import PdfWriter
+
+    from chui_reporter.runtime.versions import section_pages
+
+    class P:
+        def __init__(self, t): self.t = t
+        def extract_text(self): return self.t
+    import pypdf
+    texts = ["cover", "contents", "overview one", "capital activity two", "macro snapshot three", "balance sheet four"]
+    orig = pypdf.PdfReader
+    pypdf.PdfReader = lambda path: type("R", (), {"pages": [P(t) for t in texts]})()
+    try:
+        secs = [{"key": "1.1", "title": "Overview", "ord": 1}, {"key": "1.2", "title": "Capital Activity", "ord": 2},
+                {"key": "3.1", "title": "Macro Snapshot", "ord": 30}, {"key": "4.1", "title": "Balance Sheet", "ord": 20}]
+        assert section_pages("x.pdf", secs) == {"1.1": 3, "1.2": 4, "3.1": 5, "4.1": 6}
+    finally:
+        pypdf.PdfReader = orig
+
+
+def test_a_social_media_post_is_not_a_source_for_a_figure(store, monkeypatch):
+    monkeypatch.setattr(web, "_check_host", lambda h: None)
+    page = "<html><body><p>Headline inflation rose to 15.91 percent in June 2026.</p></body></html>" * 20
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=page, headers={"content-type": "text/html"})))
+    for url in ("https://x.com/NBS_Nigeria/status/1", "https://www.facebook.com/nbs/posts/2", "https://m.youtube.com/watch?v=3"):
+        web.fetch(store, url, client=client)
+        f = Fact("Nigeria inflation", 15.91, unit="percent", source_file=url, source_cell="Headline inflation rose to 15.91 percent in June 2026.")
+        ok, why = web.verify_web_claim(f, store)
+        assert not ok and "social media" in why, url
+    assert web.is_social("https://twitter.com/x") and not web.is_social("https://www.nbs.gov.ng/inflation")
+
+
+def test_review_notes_about_a_filled_gap_can_be_removed_precisely(store):
+    from chui_reporter.agent import tools as T
+
+    T.set_store(store)
+    store.ensure_report("F", "Q2 2026")
+    store.add_review_note("3.1", "Nigeria inflation is omitted because the page could not be read.", "warning")
+    store.add_review_note("3.1", "Kenya GDP growth is omitted because the site blocked us.", "warning")
+    assert T.report_remove_review_note.invoke({"contains": "x"}).startswith("ERROR")
+    assert "removed 1" in T.report_remove_review_note.invoke({"contains": "Nigeria inflation is omitted"})
+    assert [n["text"][:10] for n in store.review_notes()] == ["Kenya GDP "]
+    assert T.report_remove_review_note.invoke({"contains": "no such note anywhere"}).startswith("no review note")
