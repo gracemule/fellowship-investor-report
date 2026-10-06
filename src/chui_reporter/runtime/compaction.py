@@ -69,6 +69,11 @@ def compact(messages: list[BaseMessage], budget: int = DEFAULT_BUDGET, *,
     protect_from = max(0, len(messages) - KEEP_RECENT)
     view = [(_stub(m) if isinstance(m, ToolMessage) and i < protect_from else m)
             for i, m in enumerate(messages)]
+    by_tool: dict[str, int] = {}
+    for a, b in zip(messages, view):
+        if a is not b:
+            by_tool[a.name or "tool"] = by_tool.get(a.name or "tool", 0) + 1
+    shortened = sum(by_tool.values())
     stage = 1
     if estimate_tokens(view) > budget:
         stage = 2
@@ -86,7 +91,8 @@ def compact(messages: list[BaseMessage], budget: int = DEFAULT_BUDGET, *,
             "section you wrote is in the report (report_outline).]" + (f"\n{text}" if text else "")))
         view = head + [note] + view[cut:]
     return view, {"stage": stage, "before": before, "after": estimate_tokens(view),
-                  "messages_before": len(messages), "messages_after": len(view)}
+                  "messages_before": len(messages), "messages_after": len(view),
+                  "shortened": shortened, "by_tool": by_tool, "dropped": len(messages) - len(view) + (1 if stage == 2 else 0)}
 
 
 def make_hook(budget: int = DEFAULT_BUDGET, brief: Callable[[], str] | None = None,

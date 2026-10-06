@@ -494,8 +494,15 @@ class Runtime:
             if key in seen:
                 return
             seen.add(key)
-            what = ("Condensed the earlier conversation to keep it within the model's limits"
-                    if stats["stage"] == 2 else "Shortened older tool output to keep the conversation within the model's limits")
+            saved = max(0, stats["before"] - stats["after"])
+            if stats["stage"] == 2:
+                what = (f"Condensed {stats['dropped']} older messages into a short summary of where the work stands "
+                        f"(about {saved:,} tokens saved). Everything recorded in the fact ledger and the report is untouched.")
+            else:
+                kinds = ", ".join(f"{n} {name.replace('_', ' ')}" for name, n in
+                                  sorted(stats["by_tool"].items(), key=lambda x: -x[1])[:3])
+                what = (f"Shortened {stats['shortened']} older tool results ({kinds}) to their opening lines, about "
+                        f"{saved:,} tokens saved. No messages were removed, and recorded figures are untouched.")
             state.emit(self.store, "compacted", what, run_id=self._run_id, detail=stats)
 
         hook = make_hook(int(DEFAULT_BUDGET * self._budget_factor), brief=lambda: store_brief(rs), on_compact=note)
