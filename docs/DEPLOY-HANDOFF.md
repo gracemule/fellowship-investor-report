@@ -28,12 +28,14 @@ iLoveAPI converter (`CHUI_PDF_CONVERTER=iloveapi`).
 * **Region:** the same as the Neon database (visible in its connection string host).
 * Health check path `/healthz`. No persistent disk is needed.
 
-**The hosted converter must be verified, because it may not keep the brand font.** iLoveAPI documents a fixed font set
-and does not say whether it honours fonts embedded in the Word file. After deploying, with the keys set, sign in and
-run the check (`POST /api/services/check-converter` with the session cookie, or `python -m
-chui_reporter.render.check_converter` in a Render shell). It converts a sample and reports which fonts came back. If it
-says Larken is not in the PDF, tell the user: the reports will not look as designed and the options are the paid fallback
-above or another converter. Do not accept a deployment whose PDFs lose the font.
+**The hosted converter has been tested, and it drops the brand font.** Tested locally on 6 Oct 2026 with a real iLoveAPI key:
+authentication and conversion work, but the PDF comes back in Times New Roman, not Larken. The cause is the font's licence
+flag: every Larken file carries `fsType=4` ("preview and print only"), and the service refuses to use a font flagged that way.
+The same service does honour an embedded font that has no restriction (tested with DejaVu Serif, `fsType=0`). The licensed
+font files must not be modified, so the flag cannot be changed on our side. **Do not put the free/iLoveAPI profile into
+production until the user has decided how to get correctly typeset PDFs** (see the options in the README, "PDF conversion").
+After any change, re-run `python -m chui_reporter.render.check_converter` (or `POST /api/services/check-converter`); it must
+report that Larken is in the PDF.
 
 **Environment variables.** Set them in the Render dashboard. Ask the user to enter the secret values there
 themselves; never request them in chat, never put them in the repository or in `render.yaml`.

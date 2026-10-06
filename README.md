@@ -72,6 +72,14 @@ chui_reporter.render.check_converter` verifies the font survived); free accounts
 identical documents are never converted twice and a render needs one conversion when the contents page numbers are
 unchanged; and the unfinished report leaves your server for the conversion.
 
+**Tested result (6 Oct 2026): iLoveAPI converts the report but does not keep the brand font.** Larken's licence flag is
+`fsType=4` (preview and print only) on every face, and the service will not use a font flagged that way; it does use an
+embedded font with no restriction. The PDF comes back in Times New Roman, with different letter widths, so pagination and
+the contents page numbers change too. Correctly typeset PDFs therefore need one of: LibreOffice on the server (fonts are
+installed at run time from the synced Branding folder; roughly 400 MB while converting, so the free 512 MB instance is
+marginal and the paid Starter instance is safe); or a Larken licence that permits embedding (`fsType` 0 or 8), after which
+the hosted converter would work unchanged. The font files themselves are never modified.
+
 ## Reliability
 
 | Situation | What happens |

@@ -67,7 +67,8 @@ def check(store=None) -> dict:
     return {"converter": conv.name, "fonts": fonts, "larken": ok,
             "verdict": ("Larken is in the PDF: reports will look as designed." if ok else
                         "Larken is NOT in the PDF. The converter substituted another face, so layout and brand will be wrong. "
-                        "Use LibreOffice, or a converter that honours embedded fonts.")}
+                        "Larken's licence flag (fsType 4, preview and print only) is the usual reason a hosted converter refuses "
+                        "it. Use LibreOffice, or a licence that permits embedding.")}
 
 
 if __name__ == "__main__":
