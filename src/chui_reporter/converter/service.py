@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hmac
 import io
+import logging
 import os
 import re
 import resource
@@ -33,7 +34,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from ..render.convert import ConversionError, docx_to_pdf, find_soffice
+from ..render.convert import ConversionError, clean_secret, docx_to_pdf, find_soffice, fingerprint
 
 MAX_BUNDLE = 40 * 1024 * 1024          # bytes in the request
 MAX_FONTS = 12 * 1024 * 1024           # bytes of fonts once unzipped
@@ -42,6 +43,7 @@ SELFTEST_EVERY = 30.0
 FONT_DIR = Path.home() / ".fonts" / "chui-brand"
 _FONT_MAGIC = (b"\x00\x01\x00\x00", b"true", b"OTTO", b"ttcf")
 
+log = logging.getLogger("uvicorn.error")
 _turn = threading.Lock()
 _last_selftest = 0.0
 
@@ -50,13 +52,18 @@ class BadRequest(Exception):
     pass
 
 
+def configured_token() -> str:
+    return clean_secret(os.environ.get("CHUI_CONVERTER_TOKEN"), "CHUI_CONVERTER_TOKEN")
+
+
+def presented_token(header: str | None) -> str:
+    got = header or ""
+    return clean_secret(got[7:], "CHUI_CONVERTER_TOKEN") if got.lower().startswith("bearer ") else ""
+
+
 def token_ok(header: str | None) -> bool:
-    want = os.environ.get("CHUI_CONVERTER_TOKEN", "").strip()
-    if not want:
-        return False
-    got = (header or "")
-    got = got[7:].strip() if got.lower().startswith("bearer ") else ""
-    return bool(got) and hmac.compare_digest(got.encode(), want.encode())
+    want, got = configured_token(), presented_token(header)
+    return bool(want) and bool(got) and hmac.compare_digest(got.encode(), want.encode())
 
 
 def install_fonts(files: dict[str, bytes]) -> int:
@@ -140,6 +147,10 @@ def _sample_docx() -> bytes:
 
 def create_app() -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    # What this service holds, as a length and a fingerprint (never the token), so a mismatch between the two services can be
+    # found in the logs without reading either secret.
+    log.info("converter token: %s", f"{len(configured_token())} characters, fingerprint {fingerprint(configured_token())}"
+             if configured_token() else "NOT SET: every conversion will be refused")
 
     @app.api_route("/healthz", methods=["GET", "HEAD"])
     def healthz():
@@ -148,13 +159,16 @@ def create_app() -> FastAPI:
             ok = True
         except ConversionError:
             ok = False
-        return JSONResponse({"ok": True, "libreoffice": ok})
+        return JSONResponse({"ok": True, "libreoffice": ok, "token_configured": bool(configured_token())})
 
     @app.post("/convert")
     async def convert_route(request: Request):
-        if not os.environ.get("CHUI_CONVERTER_TOKEN", "").strip():
+        if not configured_token():
             return JSONResponse({"error": "the converter has no token configured"}, status_code=503)
         if not token_ok(request.headers.get("authorization")):
+            got = presented_token(request.headers.get("authorization"))
+            log.warning("refused: the token presented is %d characters, fingerprint %s; this service holds %d characters, "
+                        "fingerprint %s", len(got), fingerprint(got), len(configured_token()), fingerprint(configured_token()))
             return JSONResponse({"error": "not authorised"}, status_code=401)
         declared = int(request.headers.get("content-length") or 0)
         if declared > MAX_BUNDLE + MAX_FONTS:

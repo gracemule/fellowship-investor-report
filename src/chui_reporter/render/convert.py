@@ -37,6 +37,22 @@ class ConversionError(RuntimeError):
     pass
 
 
+def clean_secret(value: str | None, name: str = "") -> str:
+    """A secret as it was pasted into a settings box: without surrounding spaces or quotes, and without the 'NAME=' in front
+    when the whole line of a .env file was copied."""
+    v = (value or "").strip().strip("\"'").strip()
+    if name and v.startswith(name + "="):
+        v = v[len(name) + 1:].strip().strip("\"'").strip()
+    return v
+
+
+def fingerprint(secret: str) -> str:
+    """Eight characters that identify a secret without revealing it, for comparing what two places hold."""
+    import hashlib
+
+    return hashlib.sha256(secret.encode()).hexdigest()[:8] if secret else "none"
+
+
 def find_soffice() -> Path:
     for p in SOFFICE_CANDIDATES:
         if p.exists():

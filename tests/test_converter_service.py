@@ -233,3 +233,27 @@ def test_an_idle_production_server_does_not_poll_the_database_every_half_minute(
     assert janitor_every() == 30
     monkeypatch.setenv("CHUI_JANITOR_SECONDS", "5")
     assert janitor_every() == 5
+
+
+@pytest.mark.parametrize("pasted", ["s3cret-token", " s3cret-token\n", '"s3cret-token"', "'s3cret-token'",
+                                    "CHUI_CONVERTER_TOKEN=s3cret-token", 'CHUI_CONVERTER_TOKEN="s3cret-token"'])
+def test_a_token_pasted_with_quotes_spaces_or_the_whole_env_line_still_matches(svc, monkeypatch, pasted):
+    monkeypatch.setenv("CHUI_CONVERTER_TOKEN", pasted)
+    assert svc.post("/convert", content=bundle(), headers=AUTH).status_code == 200
+    assert svc.get("/healthz").json()["token_configured"] is True
+    app_side = converters.RemoteLibreOfficeConverter("https://x", pasted)
+    assert app_side.token == "s3cret-token"
+
+
+def test_a_token_mismatch_can_be_found_in_the_logs_without_revealing_either_token(svc, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+        r = svc.post("/convert", content=bundle(), headers={"Authorization": "Bearer another-token-entirely"})
+    assert r.status_code == 401
+    line = next(m for m in caplog.messages if "refused" in m)
+    assert "another-token-entirely" not in line and "s3cret-token" not in line
+    from chui_reporter.render.convert import fingerprint
+
+    assert fingerprint("another-token-entirely") in line and fingerprint("s3cret-token") in line
+    assert "22 characters" in line and "12 characters" in line           # what was presented, and what the service holds

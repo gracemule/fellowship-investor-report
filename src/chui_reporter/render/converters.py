@@ -34,7 +34,7 @@ from pathlib import Path
 
 import httpx
 
-from .convert import ConversionError, assert_font_available, docx_to_pdf, find_soffice
+from .convert import ConversionError, assert_font_available, clean_secret, docx_to_pdf, find_soffice
 
 ILOVE_AUTH = "https://api.ilovepdf.com/v1/auth"
 ILOVE_START = "https://api.ilovepdf.com/v1/start/officepdf"
@@ -144,7 +144,7 @@ class RemoteLibreOfficeConverter:
     def __init__(self, url: str | None = None, token: str | None = None, *, client: httpx.Client | None = None,
                  sleep=time.sleep):
         self.url = (url or os.environ.get("CHUI_CONVERTER_URL", "")).strip().rstrip("/")
-        self.token = (token or os.environ.get("CHUI_CONVERTER_TOKEN", "")).strip()
+        self.token = clean_secret(token or os.environ.get("CHUI_CONVERTER_TOKEN", ""), "CHUI_CONVERTER_TOKEN")
         self.client = client or httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0))
         self._sleep = sleep
         self.fonts: dict[str, bytes] = {}
