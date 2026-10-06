@@ -47,6 +47,31 @@ to render anything else.
    the interface can show what an update touched. Any version can be opened beside the latest, its changed pages
    are marked, and "Changes" shows the wording that changed (kept from the version after this feature shipped).
 
+## Sessions
+
+A session is one conversation with the agent. **New session** (top left) gives the agent a clean working memory and
+a clean activity feed; the report, its figures and every version carry over, and the agent is told the report already
+exists. Earlier sessions stay in the Sessions menu and open read-only.
+
+## Macro data and web search
+
+If the `Macro and Context` folder is empty, the agent sources the country snapshot itself. Search uses **Tavily by
+default and Brave as the automatic fallback** (`services/search.py`): when one reports its credit is used up it is skipped
+for a cooldown and the other takes over, and the default returns by itself when its allowance renews. Either key alone
+works. A figure from the web is only usable if it can be checked later: the agent must open the page (`web_fetch`, which
+stores the page as it was read) and cite the exact sentence or table row containing the figure; the quotation is verified
+against the stored page, exactly as workbook cells and PDF pages are. A figure seen only in a search result is refused.
+
+## PDF conversion
+
+Word to PDF runs in LibreOffice on the server, or through iLoveAPI (`CHUI_PDF_CONVERTER=auto|libreoffice|iloveapi`).
+LibreOffice is the reference: private and font-exact, but it needs about 400 MB while converting. The hosted converter
+needs no installation and suits a small host, with three caveats the code handles explicitly: the service lists a fixed
+font set, so the brand font is embedded in a temporary copy sent for conversion (and `python -m
+chui_reporter.render.check_converter` verifies the font survived); free accounts have a monthly file allowance, so
+identical documents are never converted twice and a render needs one conversion when the contents page numbers are
+unchanged; and the unfinished report leaves your server for the conversion.
+
 ## Reliability
 
 | Situation | What happens |

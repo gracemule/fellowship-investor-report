@@ -5,6 +5,7 @@ import { get } from './api.js';
 import { debounce } from './util.js';
 
 export const model = {
+  viewingSession: null,                 // null = the current session; otherwise an earlier one's id
   state: null, report: null, notes: null, events: [], lastId: 0, online: true,
   folder: { name: null, supported: 'showDirectoryPicker' in window, phase: 'none', checkedAt: null,
             progress: null, error: null, needsPermission: false },

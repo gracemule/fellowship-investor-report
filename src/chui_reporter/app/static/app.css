@@ -370,3 +370,31 @@ body:not(.booting) .viewer { animation: fadein .9s .1s ease both; }
 .chip.queued .nm { max-width: 260px; }
 .vrow .l1 { display: flex; align-items: baseline; }
 .vrow .l1 i { margin-left: 8px; }
+
+/* sessions */
+.mast-right { display: flex; align-items: center; gap: 18px; }
+.mast { position: relative; z-index: 30; }
+.mast-right .period-wrap:first-child { position: static; }
+.menu.wide { left: calc(var(--pad) - 8px); right: calc(var(--pad) - 8px); top: calc(100% + 4px); min-width: 0; max-width: none; max-height: 60vh; overflow-y: auto; transform-origin: top left; }
+.menu .newrow { color: var(--ink); font-weight: 500; }
+.menu .newrow svg { color: var(--accent-ink); }
+.srow { align-items: flex-start; }
+.srow > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.srow .l1 { display: flex; align-items: baseline; gap: 8px; }
+.srow b { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.srow i { font-style: normal; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; flex: none; }
+.srow small { color: var(--muted); font-size: 12px; }
+.srow.on { background: var(--paper-2); }
+.menu .row.small { color: var(--muted); font-size: 13px; }
+.sbar { position: sticky; top: -8px; z-index: 3; margin: 0 0 8px; padding: 10px 0; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; color: var(--ink-2); background: var(--paper); border-bottom: 1px solid var(--rule); }
+.sbar button { color: var(--accent-ink); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.cbox.past { background: var(--paper-2); }
+.cbox.past textarea::placeholder { color: var(--muted); }
+.attach:disabled { opacity: .35; pointer-events: none; }
+
+.svc { padding: 10px 0 4px; border-bottom: 1px solid var(--rule); }
+.svc-title { font-size: 13px; color: var(--ink-2); margin-bottom: 4px; }
+.svc-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13.5px; color: var(--muted); }
+.svc-row > span:first-child { color: var(--ink); }
+.svc-row em { font-style: normal; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; margin-left: 8px; }
+.svc-row[data-state="exhausted"] > span:last-child, .svc-row[data-state="auth"] > span:last-child { color: var(--warn); }

@@ -104,10 +104,13 @@ class Runtime:
         self._ws: dict | None = None
         self._limit_hit = False
         self._ws_at = 0.0
+        self._session: dict | None = None
+        self._session_at = 0.0
 
     # ------------------------------------------------------------------ lifecycle
 
     def start(self) -> None:
+        state.set_session_provider(lambda: self.session()["id"])
         if self.saver is None and self._agent_factory is None:
             from ..agent.graph import build_pooled_checkpointer
             self.saver, self._pool = build_pooled_checkpointer()
@@ -185,8 +188,28 @@ class Runtime:
             self._rs.ensure_report(FUND_NAME, p.label)
         return self._rs
 
+    def session(self) -> dict:
+        """The session new work goes into (cached briefly: events ask for it on every emit)."""
+        code = self.period().code
+        now = time.time()
+        if self._session is None or self._session["period"] != code or now - self._session_at > 3.0:
+            self._session, self._session_at = state.current_session(self.store, code), now
+        return self._session
+
     def thread_id(self) -> str:
-        return f"{state.WS}-{self.period().code}"
+        return self.session()["thread_id"]
+
+    def new_session(self) -> dict:
+        """A fresh conversation with the agent. The report, its facts and its versions carry over; only the
+        agent's working memory starts clean. Refused while a run is in progress."""
+        with self._lock:
+            if state.active_run(self.store):
+                raise RuntimeError("busy")
+            self._steer.clear()
+            row = state.create_session(self.store, self.period().code)
+            self._session, self._session_at = row, time.time()
+        state.emit(self.store, "session.new", "New session", session_id=row["id"])
+        return row
 
     def coverage(self):
         return ws_sync.coverage(self.store)
@@ -276,7 +299,8 @@ class Runtime:
         return " ".join(parts)
 
     def _create(self, kind: str, instruction: str) -> str:
-        rid = state.create_run(self.store, kind, instruction, self.thread_id())
+        sess = self.session()
+        rid = state.create_run(self.store, kind, instruction, sess["thread_id"], session_id=sess["id"])
         self._q.put(rid)
         state.emit(self.store, "run.queued", "", run_id=rid, detail={"kind": kind})
         return rid
@@ -422,7 +446,6 @@ class Runtime:
     def _prepare(self, run: dict) -> Store:
         from ..agent import tools as T
         from ..render import report_writer
-        from ..render.fonts import install_brand_fonts
 
         P = self.period()
         pr.set_current(P)
@@ -431,17 +454,26 @@ class Runtime:
         T.reset_questions()
         if self._prepare_files:
             src = self.workdir / "source"
-            n = ws_sync.materialize(self.store, src)
-            config.set_root(src)
-            report_writer.OUT_DIR = self.workdir / "out"
+            n = self.materialize_workspace()
             try:
-                install_brand_fonts(src)
+                from ..render import converters
+
+                converters.get_converter(rs).prepare(src)       # local fonts for LibreOffice, font files for a hosted one
             except Exception as exc:    # noqa: BLE001
-                raise RunFailed("The report's typeface is not available. Add the Branding folder "
-                                "(with Fonts/Larken) to your folder and try again.", "fonts") from exc
+                raise RunFailed(f"The report cannot be turned into a PDF yet: {exc}", "converter") from exc
             state.emit(self.store, "run.prepared", f"Working from {len([1 for _ in src.rglob('*') if _.is_file()])} files "
                        f"in your folder", run_id=run["id"], detail={"written": n})
         return rs
+
+    def materialize_workspace(self) -> int:
+        """Write the synced folder to disk and point every source location (and the output folder) at it."""
+        from ..render import report_writer
+
+        src = self.workdir / "source"
+        n = ws_sync.materialize(self.store, src)
+        config.set_root(src)
+        report_writer.OUT_DIR = self.workdir / "out"
+        return n
 
     # -- agent
 
@@ -481,8 +513,13 @@ class Runtime:
         else:
             snap = agent.get_state(cfg)
             continuing = run["kind"] in ("recover", "resume") or run["attempts"] > 1
-            payload = None if (continuing and snap.next) else \
-                {"messages": [HumanMessage(content=run["instruction"] or "Continue.")]}
+            text = run["instruction"] or "Continue."
+            if not (snap.values or {}).get("messages"):
+                v = state.latest_version(rs)
+                if v:               # a new session over a report that already exists: say so, once
+                    text = (f"[Context: the {self.period().label} report already exists (version {v['version']}). Call "
+                            f"report_outline to see what is in it before you change anything.]\n" + text)
+            payload = None if (continuing and snap.next) else {"messages": [HumanMessage(content=text)]}
 
         guard, nudges, segments = LoopGuard(), run.get("nudges", 0), 0
         while True:

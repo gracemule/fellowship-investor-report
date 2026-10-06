@@ -116,8 +116,35 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         return await run_in_threadpool(rt_of(request).snapshot_state)
 
     @app.get("/api/history")
-    async def history(request: Request, n: int = Query(150, le=500)):
-        return {"events": await run_in_threadpool(state.recent_events, rt_of(request).store, n)}
+    async def history(request: Request, n: int = Query(150, le=500), session: str | None = None):
+        """Activity of one session: the one given, or the current one."""
+        rt = rt_of(request)
+
+        def load():
+            sid = session or rt.session()["id"]
+            return {"session": sid, "events": state.recent_events(
+                rt.store, n, session=sid, include_unassigned=(sid == state.oldest_session_id(rt.store)))}
+
+        return await run_in_threadpool(load)
+
+    @app.get("/api/sessions")
+    async def list_sessions(request: Request):
+        rt = rt_of(request)
+
+        def load():
+            cur = rt.session()["id"]
+            rows = [s for s in state.sessions(rt.store) if s["period"] == rt.period().code]
+            return {"current": cur, "sessions": [{**s, "current": s["id"] == cur} for s in rows]}
+
+        return await run_in_threadpool(load)
+
+    @app.post("/api/sessions")
+    async def new_session(request: Request):
+        try:
+            row = await run_in_threadpool(rt_of(request).new_session)
+        except RuntimeError as exc:
+            raise HTTPException(409, "Stop or wait for the current run before starting a new session.") from exc
+        return {"id": row["id"]}
 
     @app.get("/api/events")
     async def events(request: Request, after: int = 0):
@@ -429,6 +456,22 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         return Response(blob, media_type=mt, headers={
             "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "private, no-store"})
+
+    @app.post("/api/services/check-converter")
+    async def check_converter(request: Request):
+        """Convert a sample in Larken with the configured converter and report which fonts came back."""
+        from ..render import check_converter as cc
+
+        rt = rt_of(request)
+
+        def go():
+            rt.materialize_workspace()          # the synced Branding folder holds the font files
+            return cc.check(rt.store)
+
+        try:
+            return await run_in_threadpool(go)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"{type(exc).__name__}: {exc}") from exc
 
     @app.get("/api/notes")
     async def notes(request: Request):

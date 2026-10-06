@@ -103,6 +103,8 @@ def build(rt) -> dict:
         "version": version,
         "versions": versions,
         "provider": _provider_label(rt),
+        "session": {"id": rt.session()["id"]},
+        "services": _services(rows),
         "last_event_id": rows["last_event"],
     }
 
@@ -112,3 +114,9 @@ def _provider_label(rt) -> str:
         return describe(rt.provider_override)
     except Exception:       # noqa: BLE001
         return ""
+
+
+def _services(rows: dict) -> dict:
+    from ..services import status
+
+    return status.build(rows.get("service_state") or [], rows.get("service_usage") or [])

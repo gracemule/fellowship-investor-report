@@ -696,21 +696,32 @@ def render_report(store, file_stem: str) -> tuple[Path, Path, dict]:
 
 
 def _render_report(store, file_stem: str) -> tuple[Path, Path, dict]:
-    assert_font_available("Larken")
+    from .. import config
+    from . import converters
+
+    conv = converters.get_converter(store)
+    conv.prepare(config.SOURCE_ROOT)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     sections, tables, charts, meta = check_report(store)
     if not sections:
         raise ValueError("report is empty -- add sections before rendering")
 
+    # The contents page quotes real page numbers, which are only known after conversion. The numbers from
+    # the previous render are almost always still right, so they go in first; if the conversion shows they
+    # are, that is one conversion instead of two (it matters when each conversion costs a credit).
+    prior = (store.meta().get("last_render") or {}).get("headings") or None
     docx_path = OUT_DIR / f"{file_stem}.docx"
-    entries = build_document(sections, tables, charts, meta, docx_path)
-    pdf_path = docx_to_pdf(docx_path, OUT_DIR)
-    pages = heading_pages(pdf_path, entries)            # second pass: real page numbers
-    build_document(sections, tables, charts, meta, docx_path, pages)
-    pdf_path = docx_to_pdf(docx_path, OUT_DIR)
+    entries = build_document(sections, tables, charts, meta, docx_path, prior)
+    pdf_path = conv.convert(docx_path, OUT_DIR)
+    pages = heading_pages(pdf_path, entries)
+    stable = prior is not None and all(prior.get(k) == v for k, v in pages.items()) \
+        and all(label in pages for _, label in entries if prior.get(label) is not None)
+    if not stable:
+        build_document(sections, tables, charts, meta, docx_path, pages)
+        pdf_path = conv.convert(docx_path, OUT_DIR)
     from .notes import write_review_notes
 
     notes_path = write_review_notes(store, OUT_DIR / f"{file_stem} - review notes.md")
     return docx_path, pdf_path, {"sections": len(sections), "tables": len(tables),
                                  "charts": len(charts), "review_notes": str(notes_path),
-                                 "heading_pages": pages}
+                                 "heading_pages": pages, "converter": conv.name}

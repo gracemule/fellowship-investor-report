@@ -50,6 +50,8 @@ export const ICON = {
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
   stop: 'M7 7h10v10H7z',
   refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
+  plus: 'M12 5v14M5 12h14',
+  clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
 };
 
 const pad = (n) => String(n).padStart(2, '0');

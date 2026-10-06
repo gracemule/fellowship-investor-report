@@ -70,12 +70,16 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= max(0.005, abs(b) * 1e-9)
 
 
-def verify_claim(f: Fact, resolve) -> tuple[bool, str]:
+def verify_claim(f: Fact, resolve, store: Store | None = None) -> tuple[bool, str]:
     """Does the cited source really contain this number?"""
     if f.value is None:
         return False, "no numeric value"
     if not f.source_file:
         return False, "no source_file cited"
+    if f.source_file.lower().startswith(("http://", "https://")):
+        from ..services.web import verify_web_claim
+
+        return verify_web_claim(f, store)
     try:
         path: Path = resolve(f.source_file)
     except FileNotFoundError:
@@ -122,6 +126,7 @@ def _pdf_forms(v: float) -> list[str]:
     forms = {f"{a:,.2f}", f"{a:,.0f}", f"{a:.2f}", f"{a:.0f}", f"{a:,.1f}"}
     forms |= {f"{a / 1e3:,.0f}", f"{a / 1e3:,.1f}", f"{a / 1e6:.2f}", f"{a / 1e6:.1f}"}
     forms |= {f"{a * 100:.2f}", f"{a * 100:.1f}", f"{a * 100:.0f}"}
+    forms |= {f"{a / 1e9:.2f}", f"{a / 1e9:.1f}"}
     return [x for x in forms if x not in {"0", "0.0", "0.00"}]
 
 

@@ -38,13 +38,15 @@ export function mountComposer() {
   };
   const placeholder = () => {
     const { q, busy, hasReport } = ctx();
+    if (past()) return 'Read-only. Start a new session to continue.';
     if (q) return q.kind === 'sources' ? 'Add a note, or attach the files…' : 'Type your answer…';
     if (busy) return 'Steer the agent…';
     if (hasReport) return 'Ask for a change to the report…';
     return 'Attach files, or choose your folder on the left';
   };
+  const past = () => !!model.viewingSession;
   const hasContent = () => !!input.value.trim() || files.some((f) => f.status === 'ready');
-  const mode = () => (hasContent() ? 'send' : ctx().busy ? 'stop' : 'idle');
+  const mode = () => (past() ? 'idle' : hasContent() ? 'send' : ctx().busy ? 'stop' : 'idle');
 
   function paint() {
     const m = mode();
@@ -54,6 +56,7 @@ export function mountComposer() {
     send.setAttribute('aria-label', m === 'stop' ? 'Stop' : 'Send');
     send.title = m === 'stop' ? 'Stop (after the current step)' : m === 'send' ? 'Send' : '';
     input.placeholder = placeholder();
+    input.disabled = past(); attach.disabled = past(); box.classList.toggle('past', past());
     hint.textContent = ctx().busy ? 'Enter to send · applied after the current step' : 'Enter to send · Shift+Enter for a new line';
     hint.classList.toggle('on', !!input.value.trim() && !coarse);
     renderChips();
@@ -157,7 +160,7 @@ export function mountComposer() {
   });
 
   subscribe((what, data) => {
-    if (what === 'state') paint();
+    if (what === 'state' || what === 'session-view') { if (what === 'session-view') { queued = null; } paint(); }
     if (what === 'event' && ['steer.applied', 'steer.dropped'].includes(data.ev.kind) && queued && data.ev.detail?.id === queued.id) { queued = null; paint(); }
     if (what === 'event' && data.ev.kind === 'run.end') { queued = null; paint(); }
   });

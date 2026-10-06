@@ -44,10 +44,23 @@ export function mountSources(root, tabCount) {
           c.files.length ? h('ul', { class: 'files' }, c.files.map((p) => h('li', {}, c.modified.includes(p) ? h('span', { class: 'tag' }, 'new') : null, p.split('/').slice(1).join('/')))) : null))));
       return el;
     };
+    const svc = S.services;
+    const providerLine = (x, i) => h('div', { class: 'svc-row', 'data-state': x.state },
+      h('span', {}, x.name === 'tavily' ? 'Tavily' : 'Brave', i === 0 && x.state !== 'unset' ? h('em', {}, 'default') : null),
+      h('span', {}, x.state === 'unset' ? 'No key set' : x.state === 'ok' ? `Ready · ${x.used} used this month`
+        : x.state === 'auth' ? 'Key rejected' : 'Credit used up · retrying automatically'));
+    const conv = svc?.converter;
     root.append(
       group('needed', 'Needed', needed) || '',
       group('ready', 'Provided', ready) || '',
       group('optional', 'Optional', optional) || '',
+      svc ? h('div', { class: 'group' }, h('h3', {}, 'Services'),
+        h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'Web search (for macro data)'), ...svc.search.map(providerLine)),
+        h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'PDF conversion'),
+          h('div', { class: 'svc-row', 'data-state': conv.ready ? 'ok' : 'unset' },
+            h('span', {}, conv.name === 'iloveapi' ? 'iLoveAPI' : 'LibreOffice'),
+            h('span', {}, !conv.ready ? (conv.name === 'iloveapi' ? 'No key set' : 'Not installed')
+              : conv.name === 'iloveapi' ? `${conv.used} files this month${conv.detail ? ' · ' + conv.detail : ''}` : 'Runs on the server')))) : '',
       S.attachments?.length ? h('div', { class: 'group' }, h('h3', {}, 'Attached by you'),
         h('ul', { class: 'slot files', style: { padding: '6px 0 12px' } }, S.attachments.map((n) => h('li', {}, n)))) : '',
       S.unplaced?.length ? h('div', { class: 'group' }, h('h3', {}, 'Not recognised'),

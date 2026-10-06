@@ -11,7 +11,7 @@ from __future__ import annotations
 CHAPTERS = ("Reading sources", "Recording figures", "Building tables", "Writing", "Checking and rendering")
 
 _C = {
-    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "look_at_image": CHAPTERS[0], "excel_sheets": CHAPTERS[0],
+    "list_sources": CHAPTERS[0], "read_pdf": CHAPTERS[0], "read_text": CHAPTERS[0], "look_at_image": CHAPTERS[0], "web_search": CHAPTERS[0], "web_fetch": CHAPTERS[0], "excel_sheets": CHAPTERS[0],
     "excel_find_value": CHAPTERS[0], "excel_dump_region": CHAPTERS[0], "portfolio_valuations": CHAPTERS[0],
     "fund_capital_position": CHAPTERS[0], "financial_statements": CHAPTERS[0], "prior_report_table": CHAPTERS[0],
     "report_save_facts": CHAPTERS[1], "report_derive_fact": CHAPTERS[1], "ledger_search": CHAPTERS[1],
@@ -25,6 +25,13 @@ _C = {
 
 def _s(v, n=60) -> str:
     return str(v).strip().replace("\n", " ")[:n]
+
+
+def _host(url) -> str:
+    from urllib.parse import urlparse
+
+    h = urlparse(str(url or "")).hostname or "a web page"
+    return h.removeprefix("www.")
 
 
 def _file(args: dict) -> str:
@@ -42,6 +49,8 @@ def describe_call(name: str, args: dict) -> tuple[str, str]:
         "read_pdf": f"Reading {_file(a) or 'a PDF'}",
         "read_text": f"Reading {_file(a) or 'a document'}",
         "look_at_image": f"Looking at {_file(a) or 'an image'}",
+        "web_search": f"Searching the web for “{_s(a.get('query'), 70)}”",
+        "web_fetch": f"Reading {_host(a.get('url'))}",
         "excel_sheets": f"Opening {_file(a) or 'a workbook'}",
         "excel_find_value": f"Looking up “{_s(a.get('label'), 40)}” in {_file(a) or 'a workbook'}",
         "excel_dump_region": f"Reading the {_s(a.get('sheet'), 40)} sheet of {_file(a) or 'a workbook'}",

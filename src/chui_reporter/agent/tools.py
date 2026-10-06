@@ -121,6 +121,77 @@ def look_at_image(file_name: str, question: str = "Describe what this shows.") -
             f"be recorded or used in the report.)")
 
 
+_ROUTER = None
+
+
+def get_router():
+    """The web-search router for the current store (built on first use, rebuilt if the store changes)."""
+    global _ROUTER
+    from ..services.search import SearchRouter
+
+    if _ROUTER is None or _ROUTER.store is not get_store():
+        _ROUTER = SearchRouter(get_store())
+    return _ROUTER
+
+
+def set_router(router) -> None:
+    global _ROUTER
+    _ROUTER = router
+
+
+@tool
+def web_search(query: str, max_results: int = 6, topic: str = "general", days: int = 0,
+               only_sites: str = "") -> str:
+    """Search the web. Returns titles, addresses, a short extract and a date where known.
+
+    Use it to FIND pages (for example the central bank's or the national statistics office's page for a
+    country's latest GDP growth, inflation, policy rate or exchange rate). A search result is a lead, not
+    evidence: you cannot record a figure from it. Open the page with web_fetch and quote it there.
+
+    topic: "general" or "news". days: only results from the last N days (0 = any).
+    only_sites: comma-separated domains to restrict to, e.g. "centralbank.go.ke,knbs.or.ke".
+    Credit is limited and shared: make each query specific, and do not repeat a query."""
+    from ..services.search import NoSearchAvailable
+
+    domains = [d.strip() for d in only_sites.split(",") if d.strip()]
+    try:
+        res = get_router().search(query, max_results=max_results, topic=topic, days=days, include_domains=domains or None)
+    except NoSearchAvailable as exc:
+        return ("ERROR: web search is not available right now (" + str(exc) + "). If the figures are needed, call "
+                "request_sources(['macro']) so the user can supply them, and carry on without them otherwise.")
+    if not res.hits:
+        return f"[{res.provider}] no results for {query!r}. Try different words or a named source."
+    lines = [f"[{res.provider}] {len(res.hits)} results for {query!r}" + (f"  ({'; '.join(res.notes)})" if res.notes else "")]
+    for h in res.hits:
+        lines.append(f"- {h.title}\n  {h.url}" + (f"  ({h.published})" if h.published else "") + f"\n  {h.snippet[:300]}")
+    return "\n".join(lines)
+
+
+@tool
+def web_fetch(url: str, find: str = "", max_chars: int = 6000) -> str:
+    """Read a web page (HTML, PDF, JSON or text) and keep it as evidence.
+
+    This is how a web figure becomes usable: after fetching, record the figure with report_save_facts
+    using source_file = this exact address and source_cell = the exact sentence or table row from the page
+    that contains the figure (copied from the text returned here), plus as_of = the period the figure
+    describes. `find` returns only the passages around that word or number (use it on long pages).
+    Pages are fetched by the server: private and internal addresses are refused."""
+    from ..services.web import FetchError, fetch, windows
+
+    try:
+        page = fetch(get_store(), url, router=get_router())
+    except FetchError as exc:
+        return f"ERROR: {exc}"
+    text = page["text"]
+    if find:
+        found = windows(text, find)
+        body = ("\n---\n".join(found) if found else f"{find!r} does not appear on the page.")
+    else:
+        body = text[: max(500, min(int(max_chars), 12000))]
+    more = "" if find or len(text) <= len(body) else f"\n[... {len(text) - len(body):,} more characters; use find= to jump to a figure]"
+    return f"[{page['title'] or page['url']}]  {page['url']}  (via {page['via']})\n{body}{more}"
+
+
 @tool
 def read_text(file_name: str, max_chars: int = 6000) -> str:
     """Read a plain-text, CSV, Markdown or Word (.docx) source document: macro indicator
@@ -538,7 +609,7 @@ def report_save_facts(facts_json: str) -> str:
 
     verified, claimed = [], []
     for f in facts:
-        ok, why = verify_claim(f, _resolve) if f.value is not None else (False, "no numeric value")
+        ok, why = verify_claim(f, _resolve, get_store()) if f.value is not None else (False, "no numeric value")
         f.status = "extracted" if ok else "claimed"
         f.note = (f.note + " | " if f.note else "") + ("verified: " if ok else "UNVERIFIED: ") + why
         (verified if ok else claimed).append((f, why))
@@ -943,6 +1014,8 @@ ALL_TOOLS = [
     request_sources,
     read_text,
     look_at_image,
+    web_search,
+    web_fetch,
     read_pdf,
     excel_sheets,
     excel_find_value,

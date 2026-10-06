@@ -54,13 +54,28 @@ def update_workspace(store: Store, ws: str = WS, *, period: str | None = None, n
 # ---- events -------------------------------------------------------------------------------
 
 
+_session_provider = None
+
+
+def set_session_provider(fn) -> None:
+    """The runtime tells this module which session new events belong to (None = no sessions)."""
+    global _session_provider
+    _session_provider = fn
+
+
 def emit(store: Store, kind: str, label: str = "", *, run_id: str | None = None,
-         chapter: str | None = None, detail: dict | None = None, ws: str = WS) -> int:
+         chapter: str | None = None, detail: dict | None = None, ws: str = WS,
+         session_id: str | None = None) -> int:
+    if session_id is None and _session_provider is not None:
+        try:
+            session_id = _session_provider()
+        except Exception:               # noqa: BLE001 - an event is never lost for want of a session
+            session_id = None
     with store.conn() as c:
         row = c.execute(
-            f"INSERT INTO {store._t('event')} (workspace_id, run_id, kind, label, chapter, detail) "
-            f"VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-            (ws, run_id, kind, label[:600], chapter, Jsonb(detail or {}))).fetchone()
+            f"INSERT INTO {store._t('event')} (workspace_id, run_id, kind, label, chapter, detail, session_id) "
+            f"VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (ws, run_id, kind, label[:600], chapter, Jsonb(detail or {}), session_id)).fetchone()
     return row["id"]
 
 
@@ -72,11 +87,18 @@ def events_after(store: Store, after: int = 0, limit: int = 300, ws: str = WS) -
     return [_iso(r) for r in rows]
 
 
-def recent_events(store: Store, n: int = 120, ws: str = WS) -> list[dict]:
+def recent_events(store: Store, n: int = 120, ws: str = WS, *, session: str | None = None,
+                  include_unassigned: bool = False) -> list[dict]:
+    """The last `n` events; of one session if given (events from before sessions existed belong to the
+    oldest session, `include_unassigned`)."""
+    where, args = "workspace_id=%s", [ws]
+    if session:
+        where += " AND (session_id=%s" + (" OR session_id IS NULL" if include_unassigned else "") + ")"
+        args.append(session)
     with store.conn() as c:
         rows = list(c.execute(
-            f"SELECT id, run_id, kind, label, chapter, detail, created_at FROM {store._t('event')} "
-            f"WHERE workspace_id=%s ORDER BY id DESC LIMIT %s", (ws, n)))
+            f"SELECT id, run_id, kind, label, chapter, detail, created_at, session_id FROM {store._t('event')} "
+            f"WHERE {where} ORDER BY id DESC LIMIT %s", (*args, n)))
     return [_iso(r) for r in reversed(rows)]
 
 
@@ -90,11 +112,12 @@ def last_event_id(store: Store, ws: str = WS) -> int:
 # ---- runs ---------------------------------------------------------------------------------
 
 
-def create_run(store: Store, kind: str, instruction: str, thread_id: str, ws: str = WS) -> str:
+def create_run(store: Store, kind: str, instruction: str, thread_id: str, ws: str = WS,
+               session_id: str | None = None) -> str:
     rid = uuid.uuid4().hex[:12]
     with store.conn() as c:
-        c.execute(f"INSERT INTO {store._t('run')} (id, workspace_id, thread_id, kind, instruction, status) "
-                  f"VALUES (%s,%s,%s,%s,%s,'queued')", (rid, ws, thread_id, kind, instruction))
+        c.execute(f"INSERT INTO {store._t('run')} (id, workspace_id, thread_id, kind, instruction, status, session_id) "
+                  f"VALUES (%s,%s,%s,%s,%s,'queued',%s)", (rid, ws, thread_id, kind, instruction, session_id))
     return rid
 
 
@@ -273,11 +296,73 @@ def snapshot_rows(store: Store, ws: str = WS) -> dict:
                 (SELECT version, pages, summary, created_at FROM {t('report_version')}
                  WHERE report_id = 'fund-i-' || (SELECT period FROM {t('workspace')} WHERE id=%(ws)s)
                  ORDER BY version DESC LIMIT 8) v), '[]'::jsonb) AS versions,
-      (SELECT coalesce(max(id),0) FROM {t('event')} WHERE workspace_id=%(ws)s) AS last_event
+      (SELECT coalesce(max(id),0) FROM {t('event')} WHERE workspace_id=%(ws)s) AS last_event,
+      coalesce((SELECT jsonb_agg(to_jsonb(x)) FROM {t('service_state')} x), '[]'::jsonb) AS service_state,
+      coalesce((SELECT jsonb_agg(to_jsonb(u)) FROM {t('service_usage')} u WHERE u.month=%(month)s), '[]'::jsonb) AS service_usage
     """
     with store.conn() as c:
-        row = c.execute(sql, {"ws": ws, "active": list(ACTIVE)}).fetchone()
+        from ..services import usage as _usage
+        args = {"ws": ws, "active": list(ACTIVE), "month": _usage.month()}
+        row = c.execute(sql, args).fetchone()
         if row["workspace"] is None:
             c.execute(f"INSERT INTO {t('workspace')} (id) VALUES (%s) ON CONFLICT DO NOTHING", (ws,))
-            row = c.execute(sql, {"ws": ws, "active": list(ACTIVE)}).fetchone()
+            row = c.execute(sql, args).fetchone()
     return row
+
+
+# ---- sessions -------------------------------------------------------------------------------------
+
+
+def sessions(store: Store, ws: str = WS) -> list[dict]:
+    """Every session, newest first, each with a title taken from what was asked in it."""
+    with store.conn() as c:
+        rows = list(c.execute(f"SELECT id, period, thread_id, created_at FROM {store._t('session')} "
+                              f"WHERE workspace_id=%s ORDER BY created_at DESC", (ws,)))
+        evs = list(c.execute(
+            f"SELECT session_id, kind, label, detail, created_at FROM {store._t('event')} WHERE workspace_id=%s "
+            f"AND kind IN ('steer','run.start','version','run.end') ORDER BY id", (ws,)))
+    oldest = rows[-1]["id"] if rows else None
+    out = []
+    for r in rows:
+        mine = [e for e in evs if e["session_id"] == r["id"] or (e["session_id"] is None and r["id"] == oldest)]
+        steer = next((e for e in mine if e["kind"] == "steer"), None)
+        start = next((e for e in mine if e["kind"] == "run.start"), None)
+        if steer:
+            title = steer["label"]
+        elif start:
+            title = {"build": "Built the report", "update": "Updated the report"}.get((start["detail"] or {}).get("kind"), "Worked on the report")
+        else:
+            title = "New session"
+        runs = sum(1 for e in mine if e["kind"] == "run.start")
+        last = max([e["created_at"] for e in mine], default=r["created_at"])
+        out.append({"id": r["id"], "period": r["period"], "title": title[:90], "runs": runs,
+                    "created_at": r["created_at"].isoformat(), "last_at": last.isoformat()})
+    return out
+
+
+def current_session(store: Store, period: str, ws: str = WS) -> dict:
+    """The session new work goes into. The first one adopts the conversation thread that existed before
+    sessions did, so nothing already done is orphaned."""
+    with store.conn() as c:
+        r = c.execute(f"SELECT id, period, thread_id, created_at FROM {store._t('session')} "
+                      f"WHERE workspace_id=%s AND period=%s ORDER BY created_at DESC LIMIT 1", (ws, period)).fetchone()
+        if r:
+            return _iso(r)
+        sid = uuid.uuid4().hex[:10]
+        r = c.execute(f"INSERT INTO {store._t('session')} (id, workspace_id, period, thread_id) VALUES (%s,%s,%s,%s) "
+                      f"RETURNING id, period, thread_id, created_at", (sid, ws, period, f"{ws}-{period}")).fetchone()
+    return _iso(r)
+
+
+def create_session(store: Store, period: str, ws: str = WS) -> dict:
+    sid = uuid.uuid4().hex[:10]
+    with store.conn() as c:
+        r = c.execute(f"INSERT INTO {store._t('session')} (id, workspace_id, period, thread_id) VALUES (%s,%s,%s,%s) "
+                      f"RETURNING id, period, thread_id, created_at", (sid, ws, period, f"{ws}-{period}-{sid}")).fetchone()
+    return _iso(r)
+
+
+def oldest_session_id(store: Store, ws: str = WS) -> str | None:
+    with store.conn() as c:
+        r = c.execute(f"SELECT id FROM {store._t('session')} WHERE workspace_id=%s ORDER BY created_at LIMIT 1", (ws,)).fetchone()
+    return r["id"] if r else None

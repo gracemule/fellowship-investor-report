@@ -1,17 +1,19 @@
 // The agent's work as a readable timeline: what it did, grouped into chapters, newest at the
 // bottom. Built only from server events, so a reloaded tab shows exactly the same history.
 
-import { model, subscribe } from './live.js';
-import { ICON, clock, h, list, md, plural, svg } from './util.js';
+import { get } from './api.js';
+import { emit, model, subscribe } from './live.js';
+import { ICON, ago, clear, clock, h, list, md, plural, svg } from './util.js';
 
 const RUN_TITLES = { build: 'Building the report', update: 'Updating the report', steer: 'Applying your change',
                      resume: 'Continuing', recover: 'Continuing' };
 
 export function mountActivity(root) {
+  const sbar = h('div', { class: 'sbar', hidden: true });
   const feed = h('div', { class: 'feed no-anim' });
   const empty = h('p', { class: 'empty-note' }, 'Nothing yet. When the agent starts work, each step appears here.');
   const pill = h('button', { class: 'pill', type: 'button', onclick: () => toBottom() }, svg(ICON.down, { size: 13 }), 'Latest');
-  root.append(feed);
+  root.append(sbar, feed);
   root.parentElement.append(pill);
   feed.append(empty);
 
@@ -178,13 +180,31 @@ export function mountActivity(root) {
         line(null, ev.label, { time: ev.created_at, small: sec });
         break;
       }
+      case 'session.new': line(null, 'New session started. The report and its history carry over.', { time: ev.created_at }); break;
       case 'waiting.sources': case 'period': line(null, ev.label, { time: ev.created_at }); break;
       default: break;
     }
   }
 
+  // Show one session's history (an earlier one read-only, or the current one live).
+  async function show(id, info) {
+    const data = await get(`/api/history?n=400${id ? `&session=${encodeURIComponent(id)}` : ''}`);
+    model.viewingSession = id || null;
+    clear(feed); runs.clear(); steerState.clear(); last = null;
+    feed.append(empty);
+    hydrating = true; feed.classList.add('no-anim'); stick = true;
+    data.events.forEach((ev) => apply(ev, false));
+    [...runs.values()].slice(0, -1).forEach((r) => r.el.classList.add('collapsed'));
+    requestAnimationFrame(() => { hydrating = false; feed.classList.remove('no-anim'); toBottom(); });
+    clear(sbar);
+    sbar.hidden = !id;
+    if (id) sbar.append(h('span', {}, info?.last_at ? `An earlier session · ${ago(info.last_at)}` : 'An earlier session'),
+      h('button', { type: 'button', onclick: () => show(null).then(() => emit('session-view')) }, 'Back to the current session'));
+    emit('session-view');
+  }
+
   subscribe((what, data) => {
-    if (what === 'event') apply(data.ev, data.live);
+    if (what === 'event' && !model.viewingSession) apply(data.ev, data.live);
     if (what === 'hydrated') {
       hydrating = false; requestAnimationFrame(() => { feed.classList.remove('no-anim'); toBottom(); });
       const open = [...runs.values()];
@@ -193,4 +213,5 @@ export function mountActivity(root) {
   });
   // replay anything ingested before this component mounted
   model.events.forEach((ev) => apply(ev, false));
+  return { show };
 }

@@ -5,6 +5,7 @@ import { mountComposer } from './composer.js';
 import { mountHero } from './hero.js';
 import { start } from './live.js';
 import { mountMenu } from './menu.js';
+import { mountSessions } from './sessions.js';
 import { mountNotes } from './notes.js';
 import { mountSources } from './sources.js';
 import { mountViewer } from './viewer.js';
@@ -63,12 +64,13 @@ async function boot() {
   if (started) return;
   started = true;
   try {
-    mountActivity($('#panel-activity'));
+    const activity = mountActivity($('#panel-activity'));
     mountHero($('#hero'));
     mountSources($('#panel-sources'), $('#count-sources'));
     mountNotes($('#panel-notes'), $('#count-notes'));
     mountViewer($('#viewer'));
     mountComposer();
+    mountSessions({ button: $('#sessions'), menu: $('#smenu'), activity });
     mountMenu({ button: $('#period'), menu: $('#menu'), onSignOut: async () => { await post('/api/logout'); location.reload(); } });
     await start();
     await folder.init();

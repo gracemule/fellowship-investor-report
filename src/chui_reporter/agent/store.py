@@ -121,6 +121,39 @@ CREATE TABLE IF NOT EXISTS {s}.workspace (
     synced_state  JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     settings      JSONB NOT NULL DEFAULT '{{}}'::jsonb
 );
+-- Outside services the agent relies on: how much each has been used this month, and whether one has
+-- run out of credit (so the router can move to the other and come back later).
+CREATE TABLE IF NOT EXISTS {s}.service_usage (
+    provider TEXT NOT NULL,
+    month    TEXT NOT NULL,
+    calls    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, month)
+);
+CREATE TABLE IF NOT EXISTS {s}.service_state (
+    provider   TEXT PRIMARY KEY,
+    state      TEXT NOT NULL DEFAULT 'ok',
+    until      TIMESTAMPTZ,
+    detail     TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- A web page as it was when the agent read it: the evidence a web figure is checked against.
+CREATE TABLE IF NOT EXISTS {s}.web_snapshot (
+    url        TEXT PRIMARY KEY,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sha256     TEXT NOT NULL,
+    title      TEXT,
+    text       TEXT NOT NULL,
+    via        TEXT
+);
+-- A conversation with the agent. The report persists across sessions; a session is just a fresh
+-- context window plus a readable history.
+CREATE TABLE IF NOT EXISTS {s}.session (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'default',
+    period       TEXT NOT NULL,
+    thread_id    TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS {s}.run (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL DEFAULT 'default',
@@ -149,6 +182,9 @@ CREATE TABLE IF NOT EXISTS {s}.event (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS event_ws_id ON {s}.event (workspace_id, id);
+ALTER TABLE {s}.event ADD COLUMN IF NOT EXISTS session_id TEXT;
+ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS session_id TEXT;
+CREATE INDEX IF NOT EXISTS event_session ON {s}.event (session_id, id);
 CREATE TABLE IF NOT EXISTS {s}.question (
     id           TEXT PRIMARY KEY,
     run_id       TEXT NOT NULL,

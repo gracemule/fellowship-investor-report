@@ -14,12 +14,17 @@ ENV PYTHONUNBUFFERED=1 \
     CHUI_WORKDIR=/var/chui \
     CHUI_ENV=production
 
-# LibreOffice (headless Word -> PDF), fontconfig for font discovery, tini to reap the zombie
-# soffice processes LibreOffice is known to leave behind.
+# LibreOffice is only needed to turn the Word file into a PDF on this machine. Skip it (WITH_LIBREOFFICE=0)
+# when a hosted converter (CHUI_PDF_CONVERTER=iloveapi) is used: the image is far smaller and the app needs
+# far less memory, which is what makes a 512 MB host workable. Render passes service environment variables
+# to the build as build arguments, so setting WITH_LIBREOFFICE there is enough.
+ARG WITH_LIBREOFFICE=1
+ENV WITH_LIBREOFFICE=${WITH_LIBREOFFICE}
+
+# fontconfig for font discovery, tini to reap the zombie soffice processes LibreOffice is known to leave behind.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      libreoffice-writer libreoffice-core fontconfig fonts-dejavu-core fonts-liberation \
-      ca-certificates tini \
+ && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core ca-certificates tini \
+ && if [ "$WITH_LIBREOFFICE" = "1" ]; then apt-get install -y --no-install-recommends libreoffice-writer libreoffice-core fonts-liberation; fi \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 app \

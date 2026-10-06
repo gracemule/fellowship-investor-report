@@ -212,6 +212,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "langchain-anthropic" },
     { name = "langchain-deepseek" },
     { name = "langgraph" },
@@ -233,7 +234,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -243,7 +243,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-anthropic", specifier = ">=1.7.5" },
     { name = "langchain-deepseek", specifier = ">=1.1.1" },
     { name = "langgraph", specifier = ">=1.2.12,<2" },
