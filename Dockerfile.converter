@@ -1,0 +1,32 @@
+# The Word -> PDF service: LibreOffice behind a small authenticated API (src/chui_reporter/converter/service.py).
+# Only the web framework is installed, not the agent. The licensed brand font is not in the image: the app sends it
+# with each request (see the service's docstring).
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/home/app \
+    SAL_USE_VCLPLUGIN=svp \
+    PYTHONPATH=/app/src
+
+# fontconfig for font discovery, tini to reap the zombie soffice processes LibreOffice leaves behind, procps for pkill.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-liberation ca-certificates tini procps \
+    libreoffice-writer libreoffice-core \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10001 app && mkdir -p /app && chown -R app:app /app /home/app
+WORKDIR /app
+USER app
+
+RUN pip install --user "fastapi>=0.110" "uvicorn>=0.29"
+ENV PATH="/home/app/.local/bin:$PATH"
+COPY --chown=app:app src/chui_reporter/__init__.py ./src/chui_reporter/__init__.py
+COPY --chown=app:app src/chui_reporter/render/__init__.py ./src/chui_reporter/render/__init__.py
+COPY --chown=app:app src/chui_reporter/render/convert.py ./src/chui_reporter/render/convert.py
+COPY --chown=app:app src/chui_reporter/converter ./src/chui_reporter/converter
+
+EXPOSE 10000
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sh", "-c", "exec uvicorn chui_reporter.converter.service:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]

@@ -1,51 +1,53 @@
-# Render blueprint for the Chui Ventures reporter.
+# Render blueprint for the Chui Ventures reporter (the app: web interface + agent).
 #
-# One web service. The agent runs inside it as a background worker thread, so there is no
-# separate worker or cron service to deploy. Keep numInstances at 1: a run is owned by the process
-# that started it, and recovery after a restart assumes a single owner.
+# The deployment is two free web services, each in its own Render workspace so that each gets its own 750 free instance hours
+# (one always-on service uses ~744 a month):
+#   1. this one, chui-reporter: the interface and the agent (the agent runs inside it as a worker thread);
+#   2. chui-converter (render.converter.yaml): LibreOffice behind a small authenticated API, so its memory never competes with
+#      the agent. The app reaches it over HTTPS with a shared token.
+# Keep numInstances at 1: a run is owned by the process that started it, and recovery assumes a single owner.
 #
-# Pick the region closest to the Neon database (the connection string's host shows its region).
+# Free services sleep after ~15 minutes without traffic. An uptime monitor that sends a request to /healthz every 5 minutes
+# (HEAD or GET) keeps both awake; /healthz does not touch the database, so the monitor does not keep Neon awake either.
+# The region matches the Neon database (eu-west-2, London).
 services:
   - type: web
     name: chui-reporter
     runtime: docker
     dockerfilePath: ./Dockerfile
-    # FREE PROFILE. Two limits to know about before relying on it:
-    #  * a free service sleeps after ~15 minutes without traffic. A run that is in progress pauses and resumes
-    #    from its last step when the service wakes (the first visit, or a pinger hitting /healthz), but the
-    #    agent is not "alone" while it is asleep;
-    #  * 512 MB of memory. The hosted PDF converter (below) is what keeps the app inside it.
-    # PAID FALLBACK (if the font check shows the hosted converter drops the brand font, or to let the agent
-    # run unattended): plan: standard, WITH_LIBREOFFICE=1, CHUI_PDF_CONVERTER=libreoffice. Nothing else changes.
     plan: free
-    region: oregon              # CHANGE to match the Neon region
+    region: frankfurt
     numInstances: 1
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
-      - key: WITH_LIBREOFFICE
+      - key: WITH_LIBREOFFICE         # the converter is a separate service; keep LibreOffice out of this image
         value: "0"
       - key: CHUI_PDF_CONVERTER
-        value: iloveapi
-      - key: DATABASE_URL           # Neon pooled connection string
+        value: remote
+      - key: CHUI_CONVERTER_URL       # the converter service's address
         sync: false
-      - key: CHUI_ACCESS_PASSWORD   # the shared password the team signs in with
+      - key: CHUI_CONVERTER_TOKEN     # must equal the converter service's token
+        sync: false
+      - key: DATABASE_URL             # Neon pooled connection string
+        sync: false
+      - key: CHUI_ACCESS_PASSWORD     # the shared password the team signs in with
         sync: false
       - key: DEEPSEEK_API_KEY
         sync: false
-      - key: ANTHROPIC_API_KEY      # optional; enables the Anthropic provider / automatic fallback
+      - key: ANTHROPIC_API_KEY        # optional; enables the Anthropic provider / automatic fallback
         sync: false
-      - key: ILOVEAPI_PUBLIC_KEY    # hosted Word -> PDF conversion
+      - key: TAVILY_API_KEY           # web search for macro data (default provider)
         sync: false
-      - key: TAVILY_API_KEY         # web search for macro data (default provider)
+      - key: BRAVE_API_KEY            # web search fallback when Tavily's credit is used up
         sync: false
-      - key: BRAVE_API_KEY          # web search fallback when Tavily's credit is used up
+      - key: ILOVEAPI_PUBLIC_KEY      # optional: hosted Word -> PDF fallback (it does not keep the brand font; see README)
         sync: false
       - key: CHUI_SESSION_SECRET
         generateValue: true
       - key: CHUI_PROVIDER
         value: deepseek
-      - key: CHUI_FALLBACK_PROVIDER # used only if its key is set
-        value: anthropic
+      - key: CHUI_SEARCH_ORDER
+        value: tavily,brave
       - key: CHUI_ENV
         value: production

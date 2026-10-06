@@ -1,0 +1,15 @@
+# Render blueprint for the PDF converter service (LibreOffice behind an authenticated API). Deploy it from its own workspace
+# (Blueprint file path: render.converter.yaml). See render.yaml for how the two services fit together.
+services:
+  - type: web
+    name: chui-converter
+    runtime: docker
+    dockerfilePath: ./Dockerfile.converter
+    plan: free
+    region: frankfurt
+    numInstances: 1
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: CHUI_CONVERTER_TOKEN     # the shared secret the app presents; the same value goes in the app's settings
+        sync: false

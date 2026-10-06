@@ -1,7 +1,8 @@
 """Turning the Word file into the PDF: a local converter or a hosted one.
 
 LibreOffice (local) is the reference: it is free, private (nothing leaves the machine) and honours the
-installed brand font. It needs about 400 MB of memory while it runs, which a small host may not have.
+installed brand font. It needs about 400 MB of memory while it runs, which a small host may not have, so it can also run as
+a service of its own (RemoteLibreOfficeConverter, src/chui_reporter/converter): same renderer, separate host.
 
 iLoveAPI (hosted) needs no installation, but three things are different and the code treats them as
 first-class concerns rather than hiding them:
@@ -129,6 +130,67 @@ class LibreOfficeConverter:
     def convert(self, docx: Path, out_dir: Path) -> Path:
         assert_font_available("Larken")
         return docx_to_pdf(docx, out_dir)
+
+
+class RemoteLibreOfficeConverter:
+    """LibreOffice running as a service of its own (src/chui_reporter/converter): the same renderer as the local one, on a
+    separate host so its memory never competes with the agent. The licensed brand font is sent with each request (three small
+    files); the service installs it once and LibreOffice then lays the document out with the real font."""
+
+    name = "remote"
+    remote = True
+    RETRY_WAIT = (4, 8, 15, 25, 30, 30, 30)       # a sleeping free host takes a minute or two to wake
+
+    def __init__(self, url: str | None = None, token: str | None = None, *, client: httpx.Client | None = None,
+                 sleep=time.sleep):
+        self.url = (url or os.environ.get("CHUI_CONVERTER_URL", "")).strip().rstrip("/")
+        self.token = (token or os.environ.get("CHUI_CONVERTER_TOKEN", "")).strip()
+        self.client = client or httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0))
+        self._sleep = sleep
+        self.fonts: dict[str, bytes] = {}
+
+    def prepare(self, root: Path) -> None:
+        if not self.url or not self.token:
+            raise ConversionError("CHUI_CONVERTER_URL and CHUI_CONVERTER_TOKEN must both be set to use the converter service")
+        self.fonts = font_files(root)
+        missing = [f for f in FAMILY_FILES if f not in self.fonts]
+        if missing:
+            raise ConversionError("the Larken font files are missing (" + ", ".join(missing) + "); add the Branding "
+                                  "folder (with Fonts/Larken) to your folder so they can be sent to the converter")
+
+    def _bundle(self, docx: Path) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(docx, docx.name)
+            for family, data in self.fonts.items():
+                z.writestr(f"fonts/{FAMILY_FILES[family]}", data)
+        return buf.getvalue()
+
+    def convert(self, docx: Path, out_dir: Path) -> Path:
+        docx, out_dir = Path(docx), Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        body, last = self._bundle(docx), None
+        for attempt in range(len(self.RETRY_WAIT) + 1):
+            try:
+                r = self.client.post(f"{self.url}/convert", content=body, headers={
+                    "Authorization": f"Bearer {self.token}", "Content-Type": "application/zip"})
+            except httpx.HTTPError as exc:                 # the host may be waking up
+                last = ConversionError(f"could not reach the converter ({type(exc).__name__})")
+            else:
+                if r.status_code == 200 and r.content[:4] == b"%PDF":
+                    out = out_dir / (docx.stem + ".pdf")
+                    out.write_bytes(r.content)
+                    return out
+                if r.status_code in (401, 403):
+                    raise ConversionError("the converter rejected the token; CHUI_CONVERTER_TOKEN must match on both services")
+                if r.status_code in (400, 413):
+                    raise ConversionError(f"the converter refused the file ({r.status_code}): {r.text[:160]}")
+                last = ConversionError(f"the converter answered {r.status_code}: {r.text[:160]}")
+                if r.status_code not in (500, 502, 503, 504):
+                    break
+            if attempt < len(self.RETRY_WAIT):
+                self._sleep(self.RETRY_WAIT[attempt])
+        raise last or ConversionError("the converter did not answer")
 
 
 class ILoveApiConverter:
@@ -268,16 +330,20 @@ def get_converter(store=None):
 
     if choice == "libreoffice":
         return LibreOfficeConverter()
+    if choice == "remote":
+        return RemoteLibreOfficeConverter()
     if choice == "iloveapi":
         return ilove()
     try:
         find_soffice()
         return LibreOfficeConverter()
     except ConversionError:
+        if os.environ.get("CHUI_CONVERTER_URL", "").strip():
+            return RemoteLibreOfficeConverter()
         if os.environ.get("ILOVEAPI_PUBLIC_KEY", "").strip():
             return ilove()
-        raise ConversionError("no PDF converter is available: install LibreOffice, or set ILOVEAPI_PUBLIC_KEY "
-                              "(and CHUI_PDF_CONVERTER=iloveapi)") from None
+        raise ConversionError("no PDF converter is available: install LibreOffice, set CHUI_CONVERTER_URL and "
+                              "CHUI_CONVERTER_TOKEN, or set ILOVEAPI_PUBLIC_KEY (and CHUI_PDF_CONVERTER=iloveapi)") from None
 
 
 def describe() -> dict:
@@ -289,6 +355,13 @@ def describe() -> dict:
     except ConversionError:
         local = False
     key = bool(os.environ.get("ILOVEAPI_PUBLIC_KEY", "").strip())
-    name = "libreoffice" if choice == "libreoffice" or (choice == "auto" and local) else "iloveapi"
-    ready = local if name == "libreoffice" else key
-    return {"name": name, "ready": ready, "choice": choice, "libreoffice_installed": local, "iloveapi_key": key}
+    remote_set = bool(os.environ.get("CHUI_CONVERTER_URL", "").strip() and os.environ.get("CHUI_CONVERTER_TOKEN", "").strip())
+    if choice == "libreoffice" or (choice == "auto" and local):
+        name = "libreoffice"
+    elif choice == "remote" or (choice == "auto" and remote_set):
+        name = "remote"
+    else:
+        name = "iloveapi"
+    ready = {"libreoffice": local, "remote": remote_set, "iloveapi": key}[name]
+    return {"name": name, "ready": ready, "choice": choice, "libreoffice_installed": local, "iloveapi_key": key,
+            "remote_configured": remote_set}

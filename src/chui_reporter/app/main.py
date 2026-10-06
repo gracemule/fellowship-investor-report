@@ -63,7 +63,7 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             origin = request.headers.get("origin")
             if origin and urlparse(origin).netloc != request.headers.get("host"):
                 return JSONResponse({"error": "cross-origin request refused"}, status_code=403)
-        open_paths = path in ("/healthz", "/api/login", "/") or path.startswith("/static/")
+        open_paths = path in ("/healthz", "/readyz", "/api/login", "/") or path.startswith("/static/")
         if not open_paths and not auth.valid(request.cookies.get(COOKIE)):
             return JSONResponse({"error": "login required"}, status_code=401)
         resp = await call_next(request)
@@ -85,10 +85,16 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
 
     # ---------------------------------------------------------------- public
 
-    @app.get("/healthz")
-    def healthz(request: Request):
-        rt_of(request).store.status_counts()          # the database answers
+    # Liveness for Render and uptime monitors (which may send HEAD instead of GET). It does not touch the database: a ping every
+    # few minutes must not keep a scale-to-zero database awake. /readyz checks the database, for a person to call.
+    @app.api_route("/healthz", methods=["GET", "HEAD"])
+    def healthz():
         return {"ok": True}
+
+    @app.api_route("/readyz", methods=["GET", "HEAD"])
+    def readyz(request: Request):
+        rt_of(request).store.status_counts()          # the database answers
+        return {"ok": True, "database": True}
 
     @app.get("/")
     def index():

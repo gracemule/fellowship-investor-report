@@ -58,9 +58,9 @@ export function mountSources(root, tabCount) {
         h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'Web search (for macro data)'), ...svc.search.map(providerLine)),
         h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'PDF conversion'),
           h('div', { class: 'svc-row', 'data-state': conv.ready ? 'ok' : 'unset' },
-            h('span', {}, conv.name === 'iloveapi' ? 'iLoveAPI' : 'LibreOffice'),
-            h('span', {}, !conv.ready ? (conv.name === 'iloveapi' ? 'No key set' : 'Not installed')
-              : conv.name === 'iloveapi' ? `${conv.used} files this month${conv.detail ? ' · ' + conv.detail : ''}` : 'Runs on the server')))) : '',
+            h('span', {}, conv.name === 'iloveapi' ? 'iLoveAPI' : conv.name === 'remote' ? 'LibreOffice service' : 'LibreOffice'),
+            h('span', {}, !conv.ready ? (conv.name === 'iloveapi' ? 'No key set' : conv.name === 'remote' ? 'Not configured' : 'Not installed')
+              : conv.name === 'iloveapi' ? `${conv.used} files this month${conv.detail ? ' · ' + conv.detail : ''}` : conv.name === 'remote' ? 'Separate service' : 'Runs on the server')))) : '',
       S.attachments?.length ? h('div', { class: 'group' }, h('h3', {}, 'Attached by you'),
         h('ul', { class: 'slot files', style: { padding: '6px 0 12px' } }, S.attachments.map((n) => h('li', {}, n)))) : '',
       S.unplaced?.length ? h('div', { class: 'group' }, h('h3', {}, 'Not recognised'),

@@ -12,7 +12,10 @@ from chui_reporter.app.main import create_app
 
 
 class _Store:
+    asked = 0
+
     def status_counts(self):
+        _Store.asked += 1
         return {}
 
 
@@ -104,3 +107,15 @@ def test_production_refuses_to_start_without_a_password(monkeypatch):
 
 def test_dev_helpers_are_not_mounted_in_production(client):
     assert client.get("/api/dev/tree").status_code in (401, 404)
+
+
+def test_uptime_monitors_can_ping_with_head_and_the_ping_never_wakes_the_database(client):
+    """Free uptime monitors send HEAD. A ping every few minutes must not touch a scale-to-zero database."""
+    before = _Store.asked
+    for _ in range(3):
+        assert client.head("/healthz").status_code == 200
+        assert client.get("/healthz").status_code == 200
+    assert _Store.asked == before, "liveness pings do not query the database"
+    assert client.head("/readyz").status_code == 200 and client.get("/readyz").json()["database"] is True
+    assert _Store.asked > before, "readiness does check the database"
+    assert client.head("/api/state").status_code in (401, 405), "only the health routes are public"

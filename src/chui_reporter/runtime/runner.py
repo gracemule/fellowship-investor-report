@@ -47,6 +47,11 @@ MAX_SEGMENTS = 10           # stretches in one run
 MAX_NUDGES = 6
 HEARTBEAT_EVERY = 15.0
 STALE_AFTER = 75
+# How often an idle server looks in the database for runs a dead process left behind. Frequent while developing; in
+# production hourly, because a check every 30 seconds would keep a scale-to-zero database awake around the clock (a restart
+# already recovers everything once at start-up).
+def janitor_every() -> float:
+    return float(os.environ.get("CHUI_JANITOR_SECONDS") or (3600 if os.environ.get("CHUI_ENV") == "production" else 30))
 
 FUND_NAME = "Chui Ventures Fund I"
 
@@ -164,7 +169,7 @@ class Runtime:
             try:
                 rid = self._q.get(timeout=2.0)
             except queue.Empty:
-                if time.time() - last_janitor > 30:
+                if time.time() - last_janitor > janitor_every():
                     last_janitor = time.time()
                     try:
                         self.recover()
