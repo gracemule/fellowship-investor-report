@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -39,6 +40,8 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> FastAPI:
     load_dotenv(find_dotenv(usecwd=True), override=False)
+    from .settings_check import report as _settings_report
+    logging.getLogger("uvicorn.error").info(_settings_report())
     auth = auth or Auth.from_env()
 
     @asynccontextmanager

@@ -33,8 +33,10 @@ class Auth:
         dev = os.environ.get("CHUI_ENV", "").lower() == "dev"
         pw = os.environ.get("CHUI_ACCESS_PASSWORD", "")
         if not pw and not dev:
+            from .settings_check import report
+
             raise RuntimeError("CHUI_ACCESS_PASSWORD is not set. Set a shared password in the server's "
-                               "environment (or CHUI_ENV=dev for local use only).")
+                               "environment (or CHUI_ENV=dev for local use only). " + report())
         return cls(pw, os.environ.get("CHUI_SESSION_SECRET"), dev=dev)
 
     # -- cookie

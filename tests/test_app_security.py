@@ -119,3 +119,21 @@ def test_uptime_monitors_can_ping_with_head_and_the_ping_never_wakes_the_databas
     assert client.head("/readyz").status_code == 200 and client.get("/readyz").json()["database"] is True
     assert _Store.asked > before, "readiness does check the database"
     assert client.head("/api/state").status_code in (401, 405), "only the health routes are public"
+
+
+def test_the_startup_report_names_settings_and_never_shows_values():
+    from chui_reporter.app.settings_check import report
+
+    line = report({"DATABASE_URL": "postgresql://user:hunter2@host/db", "CHUI_ACCESS_PASSWORD": "  ", "DEEPSEEK_API_KEY": "sk-secret",
+                   "CHUI_ACCES_PASSWORD": "typo", "CHUI_CONVERTER_TOKEN": "tok"})
+    assert "DATABASE_URL=set(" in line and "CHUI_ACCESS_PASSWORD=EMPTY" in line and "TAVILY_API_KEY=MISSING" in line
+    assert "CHUI_ACCES_PASSWORD" in line.split("misspelled:")[1], "a near-miss name is pointed out"
+    for secret in ("hunter2", "sk-secret", "typo", "postgresql://"):
+        assert secret not in line
+
+
+def test_production_refuses_to_start_without_a_password_and_says_what_it_can_see(monkeypatch):
+    monkeypatch.delenv("CHUI_ENV", raising=False)
+    monkeypatch.setenv("CHUI_ACCESS_PASSWORD", "")
+    with pytest.raises(RuntimeError, match="CHUI_ACCESS_PASSWORD=EMPTY"):
+        Auth.from_env()
