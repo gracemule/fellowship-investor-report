@@ -36,6 +36,7 @@ from .. import config
 from .. import period as pr
 from ..agent.run import repair_dangling_tool_calls, unfinished
 from ..agent.store import Store
+from ..workspace import instances
 from ..workspace import sync as ws_sync
 from ..workspace.slots import BY_ID
 from . import narrator, retention, state, versions
@@ -308,6 +309,39 @@ class Runtime:
             self._rs, self._session = None, None
         state.emit(self.store, "period", f"Reporting period set to {p.label}", detail={"period": p.code})
         return self.snapshot_state()
+
+    def instance_list(self) -> dict:
+        return instances.listing(self.store, self.period().code)
+
+    def _instance_op(self, fn, *args, reopen: bool) -> dict:
+        """Start, open or delete an instance of the open quarter. Refused while the agent is working. When the open instance
+        changes, everything held in memory about it is dropped, as when moving to another quarter."""
+        with self._lock:
+            if state.active_run(self.store):
+                raise RuntimeError("busy")
+            out = fn(self.store, self.period().code, *args)
+            if reopen:
+                if self._timer:
+                    self._timer.cancel()
+                self._steer.clear()
+                self._pending = ws_sync.Changes()
+                self._announced = ()
+                self._rs, self._session = None, None
+                self.ws_row(fresh=True)
+        return out
+
+    def new_instance(self) -> dict:
+        out = self._instance_op(instances.new_instance, reopen=True)
+        state.emit(self.store, "instance.new", f"A new instance of {self.period().label}", detail=out)
+        return out
+
+    def open_instance(self, slot: int) -> dict:
+        out = self._instance_op(instances.switch, slot, reopen=True)
+        state.emit(self.store, "instance.open", f"Opened an earlier instance of {self.period().label}", detail=out)
+        return out
+
+    def delete_instance(self, slot: int) -> dict:
+        return self._instance_op(instances.delete, slot, reopen=False)
 
     # ------------------------------------------------------------------ requests from the UI
 

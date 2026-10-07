@@ -73,7 +73,8 @@ Non-secret settings are already on the services. Secrets live only in the Render
 
 It removes that quarter's synced files, report, figures, review notes, runs, conversations (and the agent's saved memory) and feed,
 and the cache of web pages the researchers read. It refuses while a run is active, runs as one transaction, and never touches
-another quarter.
+another quarter. It resets the quarter's *open* instance only; the quarter's other instances (the page's *New instance*) are left as they are
+and are deleted from the page's quarter menu.
 
 The brand kit (logos and fonts) is installed once for every quarter and is not removed by this unless asked. A database that
 has never held it (or lost it with `--brand`) gets it back, without opening the app, with:

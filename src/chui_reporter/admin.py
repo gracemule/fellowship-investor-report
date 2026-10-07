@@ -23,6 +23,7 @@ from psycopg.types.json import Jsonb
 from . import period as pr
 from .agent.store import Store
 from .runtime import state
+from .workspace import instances
 from .workspace import sync as ws_sync
 
 
@@ -34,7 +35,7 @@ class _DryRun(Exception):
     pass
 
 
-REPORT_TABLES = ("section", "tbl", "chart", "fact", "review_note", "report_version", "subagent_run")
+REPORT_TABLES = instances.REPORT_TABLES
 CLI_REPORT = "chui-fund-i"          # the report the command-line agent (before the web app) wrote to; the web app never reads it
 
 

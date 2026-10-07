@@ -370,8 +370,11 @@ def current_session(store: Store, period: str, ws: str = WS) -> dict:
         if r:
             return _iso(r)
         sid = uuid.uuid4().hex[:10]
+        thread = f"{ws}-{period}"
+        if c.execute(f"SELECT 1 FROM {store._t('session')} WHERE thread_id=%s", (thread,)).fetchone():
+            thread = f"{ws}-{period}-{sid}"        # another instance of this quarter (parked) already holds that conversation
         r = c.execute(f"INSERT INTO {store._t('session')} (id, workspace_id, period, thread_id) VALUES (%s,%s,%s,%s) "
-                      f"RETURNING id, period, thread_id, created_at", (sid, ws, period, f"{ws}-{period}")).fetchone()
+                      f"RETURNING id, period, thread_id, created_at", (sid, ws, period, thread)).fetchone()
     return _iso(r)
 
 

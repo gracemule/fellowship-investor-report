@@ -4,12 +4,13 @@
 import { post } from './api.js';
 import * as folder from './folder.js';
 import { emit, model, subscribe } from './live.js';
+import * as inst from './instances.js';
 import { setQuarter } from './quarter.js';
-import { ICON, clear, h, svg, toast } from './util.js';
+import { ICON, clear, h, svg } from './util.js';
 
 export function mountMenu({ button, menu, onSignOut }) {
   const setPeriod = async (code) => { close(); await setQuarter(code); };
-  const close = () => { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); };
+  const close = () => { menu.hidden = true; button.setAttribute('aria-expanded', 'false'); inst.cancel(); };
 
   function render() {
     const S = model.state;
@@ -31,11 +32,15 @@ export function mountMenu({ button, menu, onSignOut }) {
         h('span', {}, 'Update automatically'), h('span', { class: 'switch-ctl', role: 'switch', 'aria-checked': String(auto) })),
       h('hr'),
       h('button', { class: 'row', type: 'button', role: 'menuitem', onclick: () => { close(); folder.pick(); } }, h('span', {}, model.folder.name ? 'Change folder' : 'Choose folder')),
+      h('hr'),
+      inst.view(),
+      h('hr'),
       h('button', { class: 'row', type: 'button', role: 'menuitem', onclick: () => { close(); onSignOut(); } }, h('span', {}, 'Sign out')));
   }
-  button.addEventListener('click', (e) => { e.stopPropagation(); const open = menu.hidden; menu.hidden = !open; button.setAttribute('aria-expanded', String(open)); });
-  document.addEventListener('click', (e) => { if (!menu.contains(e.target)) close(); });
+  button.addEventListener('click', (e) => { e.stopPropagation(); const open = menu.hidden; menu.hidden = !open; button.setAttribute('aria-expanded', String(open)); if (open) inst.refresh(); });
+  document.addEventListener('click', (e) => { if (!e.composedPath().includes(menu)) close(); });   // the path, not the target: a button that re-rendered itself away is still inside
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   subscribe((what) => { if (what === 'state' || (what === 'folder' && ['none', 'watching'].includes(model.folder.phase))) render(); });
+  inst.onChange(render);
   render();
 }

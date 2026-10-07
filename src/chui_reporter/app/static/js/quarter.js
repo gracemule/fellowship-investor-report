@@ -7,13 +7,20 @@ import * as folder from './folder.js';
 import { emit, model, refreshNotes, refreshReport } from './live.js';
 import { toast } from './util.js';
 
-export async function setQuarter(code) {
-  try { model.state = await post('/api/period', { period: code }); }
-  catch (e) { if (e.status !== 401) toast(e.message, 'bad'); return false; }
+// Make the page show exactly what the server now holds for the open quarter, and nothing left over from before.
+export async function follow(state) {
+  model.state = state;
   model.events = []; model.report = null; model.notes = null; model.viewingSession = null; model.replyTo = null;
   emit('state');
   await folder.switchQuarter();
   emit('quarter', model.state.period);
   await Promise.allSettled([refreshReport(), refreshNotes()]);
+}
+
+export async function setQuarter(code) {
+  let state;
+  try { state = await post('/api/period', { period: code }); }
+  catch (e) { if (e.status !== 401) toast(e.message, 'bad'); return false; }
+  await follow(state);
   return true;
 }

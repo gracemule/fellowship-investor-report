@@ -27,6 +27,7 @@ from .. import period as pr
 from ..agent.store import Store
 from ..runtime import state
 from ..runtime.runner import Runtime
+from ..workspace import instances
 from ..workspace import sync as ws_sync
 from ..workspace.slots import is_durable
 from . import dev as devroutes
@@ -382,6 +383,44 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
             return await run_in_threadpool(rt.set_period, p.code)
         except RuntimeError as exc:
             raise HTTPException(409, "Wait for the current run to finish before changing the quarter.") from exc
+
+    @app.get("/api/instances")
+    async def instance_list(request: Request):
+        """The open instance of this quarter and the parked ones."""
+        return await run_in_threadpool(rt_of(request).instance_list)
+
+    async def _instance_call(request: Request, body: dict, fn, *args, with_state: bool = True):
+        rt = rt_of(request)
+        _quarter(rt, body.get("period"))
+        try:
+            out = await run_in_threadpool(fn, *args)
+        except RuntimeError as exc:
+            if isinstance(exc, instances.InstanceError):
+                raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(409, "Stop the agent, or wait for it to finish, first.") from exc
+        res = {**out, "list": await run_in_threadpool(rt.instance_list)}
+        if with_state:
+            res["state"] = await run_in_threadpool(rt.snapshot_state)
+        return res
+
+    def _slot(body: dict) -> int:
+        try:
+            return int(body.get("slot"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "Which instance?") from exc
+
+    @app.post("/api/instances/new")
+    async def instance_new(request: Request, body: dict = Body(default={})):
+        """Keep the open instance and start a blank one."""
+        return await _instance_call(request, body, rt_of(request).new_instance)
+
+    @app.post("/api/instances/open")
+    async def instance_open(request: Request, body: dict = Body(...)):
+        return await _instance_call(request, body, rt_of(request).open_instance, _slot(body))
+
+    @app.post("/api/instances/delete")
+    async def instance_delete(request: Request, body: dict = Body(...)):
+        return await _instance_call(request, body, rt_of(request).delete_instance, _slot(body), with_state=False)
 
     @app.post("/api/settings")
     async def settings(request: Request, body: dict = Body(...)):

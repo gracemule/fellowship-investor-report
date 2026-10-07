@@ -244,7 +244,7 @@ export function mountActivity(root) {
         break;
       }
       case 'session.new': line(null, 'New session started. The report and its history carry over.', { time: ev.created_at }); break;
-      case 'waiting.sources': case 'period': case 'source.cleared': case 'source.moved': line(null, ev.label, { time: ev.created_at }); break;
+      case 'waiting.sources': case 'period': case 'source.cleared': case 'source.moved': case 'instance.new': case 'instance.open': line(null, ev.label, { time: ev.created_at }); break;
       default: break;
     }
   }

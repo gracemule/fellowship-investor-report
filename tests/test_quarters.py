@@ -659,6 +659,83 @@ def test_a_reset_that_fails_part_way_changes_nothing(store, rt, monkeypatch):
     assert len(store_q2.sections()) == 1 and state.latest_version(store_q2) is not None, "rolled back as a whole"
 
 
+def test_a_new_instance_keeps_the_old_one_and_opens_the_quarter_blank(client, rt, store):
+    keep = _populate(store, rt, Q3)
+    _populate(store, rt, Q2, report_note="first")
+    sync.commit(store, _brand(store, Q2) + [_put(store, Q2, "Fund Financials/LP.xlsx", b"q2")], Q2, folder="q2 folder")
+    first = rt.session()
+    rt._pending.added.append("Fund Financials/LP.xlsx")
+    listing = client.get("/api/instances").json()
+    assert (listing["cap"], listing["used"], listing["can_create"]) == (3, 1, True)
+    now = listing["items"][0]
+    assert now["current"] and now["files"] == 1 and now["versions"] == 1 and now["notes"] == 1 and now["started_at"]
+
+    assert client.post("/api/instances/new", json={"period": Q3}).status_code == 409, "a stale page cannot start one for another quarter"
+    done = client.post("/api/instances/new", json={"period": Q2}).json()
+    s = done["state"]
+    assert s["period"]["code"] == Q2 and s["status"]["phase"] == "empty" and s["version"] is None and s["versions"] == []
+    assert s["workspace"]["files"] == 0 and s["workspace"]["folder"] is None and s["workspace"]["last_sync_at"] is None and s["pending"] is None
+    assert rt.report_store().sections() == [] and client.get("/api/notes").json()["notes"] == []
+    assert [e["kind"] for e in client.get("/api/history").json()["events"]] == ["instance.new"], "a feed of its own"
+    fresh = rt.session()
+    assert fresh["id"] != first["id"] and fresh["thread_id"] != first["thread_id"], "it never inherits the other's conversation memory"
+    assert len(client.get("/api/sessions").json()["sessions"]) == 1
+    cov = {c.slot.id: c.state for c in sync.coverage(store, workspace=Q2)}
+    assert cov["brand_fonts"] == cov["brand_logos"] == "ready", "the brand kit is the system's"
+    assert len(keep.sections()) == 1 and _paths(store, Q3) == ["Fund Financials/LP.xlsx"], "another quarter is untouched"
+
+    items = done["list"]["items"]                                   # the first instance is parked whole, not deleted
+    assert [i["slot"] for i in items] == [0, 1] and items[0]["empty"] and not items[1]["empty"]
+    assert (items[1]["files"], items[1]["versions"], items[1]["notes"]) == (1, 1, 1)
+    assert _paths(store, "2026Q2~1") == ["Fund Financials/LP.xlsx"]
+    assert state.latest_version(Store(url=store.url, schema=store.schema, report_id="fund-i-2026Q2~1")) is not None
+
+    _populate(store, rt, Q2, report_note="second")                  # work in the new one, then keep that too
+    assert client.post("/api/instances/new", json={"period": Q2}).status_code == 200
+    _populate(store, rt, Q2, report_note="third")
+    full = client.get("/api/instances").json()
+    assert full["used"] == 3 and full["can_create"] is False and "3 instances" in full["reason"]
+    r = client.post("/api/instances/new", json={"period": Q2})
+    assert r.status_code == 409 and "3 instances" in r.json()["detail"], "capped, so one has to go first"
+    assert [n["text"] for n in client.get("/api/notes").json()["notes"]] == ["third 2026Q2"]
+
+    opened = client.post("/api/instances/open", json={"period": Q2, "slot": 1}).json()          # back to the first one
+    assert opened["state"]["version"] is not None and opened["state"]["workspace"]["folder"] == "q2 folder"
+    assert [n["text"] for n in client.get("/api/notes").json()["notes"]] == ["first 2026Q2"]
+    assert rt.session()["id"] == first["id"] and rt.session()["thread_id"] == first["thread_id"], "its own conversation again"
+    assert sorted(i["slot"] for i in opened["list"]["items"]) == [0, 1, 2], "the one that was open is parked in its place"
+    parked = {i["slot"]: i for i in opened["list"]["items"]}
+    assert parked[1]["notes"] == 1 and parked[2]["notes"] == 1
+    assert _paths(store, Q2) == ["Fund Financials/LP.xlsx"] and _paths(store, "2026Q2~1") == ["Fund Financials/LP.xlsx"]
+
+    gone = client.post("/api/instances/delete", json={"period": Q2, "slot": 2}).json()          # making room
+    assert gone["deleted"] == 2 and gone["list"]["used"] == 2 and gone["list"]["can_create"] is True
+    assert _paths(store, "2026Q2~2") == [] and client.get("/api/state").json()["version"] is not None, "the open one is untouched"
+    assert client.post("/api/instances/delete", json={"period": Q2, "slot": 0}).status_code == 409, "never the open one"
+    assert client.post("/api/instances/delete", json={"period": Q2, "slot": 2}).status_code == 409, "already gone"
+    assert client.post("/api/instances/open", json={"period": Q2, "slot": "x"}).status_code == 400
+
+
+def test_instances_are_refused_when_they_would_lose_work_or_the_agent_is_busy(client, rt, store):
+    from chui_reporter import admin
+
+    assert client.post("/api/instances/new", json={}).status_code == 409, "a blank quarter has nothing to keep"
+    assert client.get("/api/instances").json()["can_create"] is False
+    _populate(store, rt, Q2)
+    assert client.post("/api/instances/new", json={}).status_code == 200
+    admin.reset_quarter(store, Q2, apply=True)                      # the operator's reset empties the open one only
+    assert _paths(store, "2026Q2~1") == ["Fund Financials/LP.xlsx"] and client.get("/api/instances").json()["used"] == 2
+    opened = client.post("/api/instances/open", json={"slot": 1}).json()          # a blank open instance is dropped, not parked
+    assert opened["list"]["used"] == 1 and opened["list"]["items"][0]["files"] == 1
+
+    rid = rt._create("build", "x")
+    state.update_run(store, rid, status="running")
+    for call in ("new", "open", "delete"):
+        assert client.post(f"/api/instances/{call}", json={"slot": 1}).status_code == 409, call
+    assert _paths(store, Q2) == ["Fund Financials/LP.xlsx"]
+    assert client.get("/api/instances").status_code == 200, "looking is always allowed"
+
+
 # ---- the feed speaks in names a person would use ----------------------------------------------------------------------------
 
 

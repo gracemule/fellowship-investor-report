@@ -92,6 +92,14 @@ new quarter never asks for it). Synced the wrong quarter? Sources has *Move to a
 
 **The brand kit is the system's, not a quarter's.** Logos and fonts are never on a quarter's checklist and are never "Needed": they are installed once, shown under Sources → Services (*Installed · kept for every quarter*), and used by every quarter. The first time a folder with a `Branding` folder is connected they are stored; after that no folder has to contain them, and a folder that lacks them removes nothing. If the kit has never been installed the page says so once (*The brand kit is not installed yet*) and a report is not built until it is, because the report cannot be typeset without it. An operator can install it directly: `python -m chui_reporter.admin install-brand "/path/to/folder"`.
 
+**A quarter can be started again without losing what was done.** The quarter menu has *New instance*: the open instance (its files,
+report and every version of it, figures, review notes, activity and conversations) is kept, and the quarter opens blank: no files,
+no report, no notes, and a new conversation that does not inherit the agent's memory of the other. The earlier ones are listed in
+the same menu and can be opened again (the one that was open is kept in its place) or deleted. A quarter holds at most **three**
+instances, because each carries its own copy of the files and report versions and the database is small; at three, delete one to make
+room. A blank instance is never kept, and nothing can be started, opened or deleted while the agent is working. Connect the
+folder again after switching: a folder belongs to the instance that was open when it was connected.
+
 **After choosing a folder, the page says what arrived.** When a sync finishes it shows, for a few seconds, how many files came in,
 from which folder, how many were for the quarter and how many were the brand kit, whether every required source is in, and any
 files that matched no source or were skipped as too large. The same receipt stays under Sources (kept on the server, so it is there
