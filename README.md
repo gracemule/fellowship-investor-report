@@ -90,6 +90,11 @@ the previous quarter's report (the agent reads it with `prior_quarter_report`; i
 new quarter never asks for it). Synced the wrong quarter? Sources has *Move to another quarter* and *Remove synced files*
 (the brand kit is never touched). A folder that is empty is shown as connected and empty, not as "nothing chosen".
 
+**After choosing a folder, the page says what arrived.** When a sync finishes it shows, for a few seconds, how many files came in,
+from which folder, how many were for the quarter and how many were the brand kit, whether every required source is in, and any
+files that matched no source or were skipped as too large. The same receipt stays under Sources (kept on the server, so it is there
+after a reload) and the feed records it ("Synced 86 files from “…”: 86 new").
+
 **What the user gives the agent is a source.** A figure typed in the conversation is accepted when the agent quotes the
 user's own sentence (checked against what they wrote); figures in attached PDFs, workbooks, Word files, CSV and text are
 verified in those files; a figure read from an attached image is accepted as the user's and flagged for their review, since

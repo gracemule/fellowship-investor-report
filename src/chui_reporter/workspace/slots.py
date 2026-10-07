@@ -33,6 +33,8 @@ SLOTS: tuple[Slot, ...] = (
     Slot("lp_workpaper", "Mauritius LP workpapers", "Fund Financials",
          ("*chui ventures lp*.xlsx", "*lp*.xlsx"), True, ("2.1", "2.2", "4.1", "4.2"),
          "The Chui Ventures LP working papers (Excel) for the period."),
+    Slot("gp_workpaper", "Management company workpapers", "Fund Financials", ("*chui ventures gp*.xlsx", "*gp*.xlsx"), False, (),
+         "The Chui Ventures GP (management company) working papers (Excel), if you have them."),
     Slot("fund_model", "Fund model", "Portfolio Company Data", ("*fund model*.xlsx",), True,
          ("2.1", "2.2", "4.1", "4.2", "5.1", "5.2", "5.3", "5.4"),
          "The fund model workbook with Portfolio Valuation and Summary Report sheets."),

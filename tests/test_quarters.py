@@ -486,3 +486,142 @@ def test_a_build_with_nothing_written_is_still_sent_back_to_work(store):
     rt.set_period(Q3)
     rt.execute(rt._create("build", "Build the report"))
     assert _events(store, "nudge"), "a build run is held to the render-and-inspect check"
+
+
+# ---- what the last sync brought in ------------------------------------------------------------------------------------------
+
+
+def test_each_sync_that_changes_something_leaves_a_summary_the_page_can_show(store, rt):
+    rt.set_period(Q3)
+    m = [_put(store, Q3, "Fund Financials/LP.xlsx", b"lp"), _put(store, Q3, "Valuation Reports/A.xlsx", b"a")] + _brand(store, Q3)
+    ch = sync.commit(store, m, Q3, folder="q3 data", skipped=["Valuation Reports/huge.xlsx"])
+    ls = rt.snapshot_state()["workspace"]["last_sync"]
+    assert ls["folder"] == "q3 data" and ls["files"] == 6 and ls["added"] == len(ch.added) == 6 and ls["brand"] == 4
+    assert ls["modified"] == 0 and ls["removed"] == 0 and ls["skipped"] == ["Valuation Reports/huge.xlsx"] and ls["at"]
+    sync.commit(store, m, Q3, folder="q3 data")                       # the watcher looking again: nothing changed
+    assert rt.snapshot_state()["workspace"]["last_sync"] == ls, "an unchanged look does not wipe the receipt"
+    m[0] = _put(store, Q3, "Fund Financials/LP.xlsx", b"lp, revised")
+    sync.commit(store, m, Q3, folder="q3 data")
+    again = rt.snapshot_state()["workspace"]["last_sync"]
+    assert again["modified"] == 1 and again["added"] == 0 and again["at"] >= ls["at"]
+
+
+def test_the_sync_is_announced_in_the_feed_with_the_folder_and_the_counts(store, rt):
+    rt.set_period(Q3)
+    ch = sync.Changes(added=["a", "b", "c"], modified=["d"], removed=["e"])
+    assert rt._sync_label(ch, "q3 data") == "Synced 4 files from “q3 data”: 3 new, 1 updated, 1 removed"
+    assert rt._sync_label(sync.Changes(removed=["x"])) == "Folder changed: 1 removed"
+    rt.on_sync(sync.Changes(added=["Fund Financials/LP.xlsx"]), "q3 data")
+    ev = [e for e in state.recent_events(store, 20) if e["kind"] == "source.sync"][-1]
+    assert ev["label"] == "Synced 1 file from “q3 data”: 1 new" and ev["detail"]["folder"] == "q3 data"
+
+
+def test_the_commit_call_answers_with_what_the_page_needs_to_say_sync_complete(client, rt):
+    rt.set_period(Q3)
+    data = b"hello"
+    client.put(f"/api/sync/file?path=Fund%20Financials/LP.xlsx&sha256={_h(data)}&period={Q3}", content=data)
+    r = client.post("/api/sync/commit", json={"manifest": [{"path": "Fund Financials/LP.xlsx", "sha256": _h(data), "size": 5}],
+                                              "period": Q3, "folder": "q3 data", "skipped": ["big.xlsx"]}).json()
+    assert r["folder"] == "q3 data" and r["files"] == 1 and r["brand"] == 0 and r["changes"]["added"] == ["Fund Financials/LP.xlsx"]
+    assert client.get("/api/state").json()["workspace"]["last_sync"]["skipped"] == ["big.xlsx"]
+
+
+# ---- the operator's reset ----------------------------------------------------------------------------------------------------
+
+
+def _populate(store, rt, code, report_note="n"):
+    from chui_reporter import admin  # noqa: F401
+
+    rt.set_period(code)
+    rs = rt.report_store()
+    rs.set_section("1.1", "Overview", "text", 1)
+    rs.set_table("t1", "A table", ["a"], [["1"]], "1.1", {})
+    rs.add_facts([Fact(label=f"{code} fact", value=1.0, unit="USD", source_file="f.xlsx", source_cell="A1")])
+    rs.add_review_note("Area", f"{report_note} {code}", "info")
+    state.save_version(rs, 3, {"sections": []}, b"%PDF", None, None)
+    sync.commit(store, [_put(store, code, "Fund Financials/LP.xlsx", code.encode())], code, folder=f"{code} folder")
+    rid = rt._create("build", "x")
+    state.update_run(store, rid, status="done")
+    state.emit(store, "step", f"{code} step")
+    return rs
+
+
+def test_resetting_a_quarter_returns_it_to_blank_and_touches_no_other_quarter(store, rt):
+    from chui_reporter import admin
+
+    for code in (Q2, Q3):
+        _populate(store, rt, code)
+    sync.commit(store, [_put(store, Q3, "Fund Financials/LP.xlsx", Q3.encode())] + _brand(store, Q3), Q3)      # Q3's folder, brand kit included
+    store_q2 = Store(url=store.url, schema=store.schema, report_id=f"fund-i-{Q2}")
+    from chui_reporter.services import web
+
+    web.save_snapshot(store, "https://cbk.example/x", "page text " * 30, "p", "direct")
+
+    dry = admin.reset_quarter(store, Q2)
+    assert dry["applied"] is False and dry["counts"]["files"] >= 1 and dry["counts"]["runs"] == 1
+    assert state.latest_version(store_q2) is not None, "a dry run deletes nothing"
+
+    done = admin.reset_quarter(store, Q2, apply=True)
+    assert done["applied"] is True and done["counts"]["runs"] == 1 and done["counts"]["sessions"] >= 1
+    assert state.latest_version(store_q2) is None and store_q2.sections() == [] and store_q2.review_notes() == []
+    assert _paths(store, Q2) == [] and state.workspace(store, Q2)["last_sync_at"] is None
+    assert not [e for e in state.recent_events(store, 200) if e["label"] == f"{Q2} step"]
+    # the other quarter and the shared brand kit are exactly as they were
+    store_q3 = Store(url=store.url, schema=store.schema, report_id=f"fund-i-{Q3}")
+    assert state.latest_version(store_q3) is not None and len(store_q3.sections()) == 1 and len(store_q3.review_notes()) == 1
+    assert _paths(store, Q3) == ["Fund Financials/LP.xlsx"] and len(_paths(store, sync.SHARED)) == 4
+    assert [e for e in state.recent_events(store, 200) if e["label"] == f"{Q3} step"]
+    with store.conn() as c:
+        assert c.execute(f"SELECT 1 FROM {store._t('web_snapshot')}").fetchone() is None, "the web cache was emptied"
+    # and the quarter works again from blank
+    rt.set_period(Q2)
+    assert rt.snapshot_state()["status"]["phase"] == "empty" and rt.snapshot_state()["version"] is None
+
+
+def test_the_brand_kit_goes_only_when_asked_and_a_reset_refuses_while_the_agent_is_working(store, rt):
+    from chui_reporter import admin
+
+    _populate(store, rt, Q2)
+    sync.commit(store, _brand(store, Q2), Q2)
+    admin.reset_quarter(store, Q2, apply=True)
+    assert len(_paths(store, sync.SHARED)) == 4
+    _populate(store, rt, Q2)
+    admin.reset_quarter(store, Q2, brand=True, apply=True)
+    assert _paths(store, sync.SHARED) == []
+    rid = rt._create("build", "x")
+    state.update_run(store, rid, status="running")
+    with pytest.raises(admin.Busy):
+        admin.reset_quarter(store, Q2, apply=True)
+
+
+def test_a_reset_that_fails_part_way_changes_nothing(store, rt, monkeypatch):
+    from chui_reporter import admin
+
+    _populate(store, rt, Q2)
+    store_q2 = Store(url=store.url, schema=store.schema, report_id=f"fund-i-{Q2}")
+    real = admin.pr.Period.parse
+
+    def parse(text):
+        return real(text)
+
+    # make a late delete fail: the table the reset empties last before the dry-run check
+    monkeypatch.setattr(admin, "REPORT_TABLES", ("section", "no_such_table"))
+    with pytest.raises(Exception):
+        admin.reset_quarter(store, Q2, apply=True)
+    assert len(store_q2.sections()) == 1 and state.latest_version(store_q2) is not None, "rolled back as a whole"
+
+
+# ---- the feed speaks in names a person would use ----------------------------------------------------------------------------
+
+
+def test_the_feed_names_files_the_way_a_person_would():
+    from chui_reporter.runtime.narrator import describe_call, friendly_file
+
+    names = ["06. LAMI-Portfolio Valuation Report .xlsx", "12. OneHealth-Portfolio Valuation Report .xlsx",
+             "Fund Model Cap $16.3 M (Q2 2026) (2).xlsx", "06_30_2026 - CHUI VENTURES FUND I, LP Financial Package (1).pdf"]
+    assert friendly_file(names[0]) == "LAMI valuation report" and friendly_file(names[1]) == "OneHealth valuation report"
+    assert friendly_file(names[2]) == "Fund Model Cap $16.3 M (Q2 2026)"
+    assert describe_call("excel_sheets", {"file_name": "06"}, names)[1] == "Opening LAMI valuation report"
+    assert describe_call("excel_sheets", {"file_name": "Fund Model"}, names)[1] == "Opening Fund Model Cap $16.3 M (Q2 2026)"
+    assert describe_call("read_pdf", {"file_name": "Financial Package"}, names)[1].startswith("Reading 06_30_2026 - CHUI VENTURES FUND I")
+    assert describe_call("excel_sheets", {"file_name": "Uncover"}, [])[1] == "Opening Uncover", "without the names, as before"

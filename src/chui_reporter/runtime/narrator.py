@@ -8,6 +8,8 @@ five things rather than sixty.
 
 from __future__ import annotations
 
+import re
+
 CHAPTERS = ("Reading sources", "Recording figures", "Building tables", "Writing", "Checking and rendering")
 
 _C = {
@@ -35,29 +37,50 @@ def _host(url) -> str:
     return h.removeprefix("www.")
 
 
-def _file(args: dict) -> str:
-    f = args.get("file_name") or ""
-    f = str(f).rsplit("/", 1)[-1]
+_EXT = re.compile(r"\.(xlsx|xlsm|xls|pdf|docx|csv|txt|md|json|png|jpe?g|webp|gif)$", re.I)
+
+
+def friendly_file(name: str) -> str:
+    """A file name as a person would say it: no extension, no list number, no copy suffix, 'LAMI valuation report'."""
+    s = _EXT.sub("", name.strip())
+    s = re.sub(r"^\d+\s*[.)]\s*", "", s)
+    s = re.sub(r"\s*\(\d+\)\s*$", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if re.search(r"valuation report", s, re.I):
+        company = re.split(r"\s*[-–]\s*|\s+valuation", s, maxsplit=1, flags=re.I)[0].strip()
+        if company and company.casefold() != "valuation report":
+            return f"{company} valuation report"
+    return s
+
+
+def _file(args: dict, names=()) -> str:
+    f = str(args.get("file_name") or "").rsplit("/", 1)[-1]
+    if names and f:
+        low = f.casefold()
+        hit = next((x for x in names if x.casefold() == low), None) or next((x for x in names if low in x.casefold()), None)
+        if hit:
+            return friendly_file(hit)
     return f.rsplit(".", 1)[0] if len(f) > 3 else f
 
 
-def describe_call(name: str, args: dict) -> tuple[str, str]:
-    """(chapter, present-tense sentence)."""
+def describe_call(name: str, args: dict, names=()) -> tuple[str, str]:
+    """(chapter, present-tense sentence). `names` are the file names in the sources, so a partial name the agent used is said in full."""
     a = args or {}
+    _file_ = lambda x: _file(x, names)  # noqa: E731
     ch = _C.get(name, CHAPTERS[0])
     text = {
         "list_sources": "Checking which source documents are available",
-        "read_pdf": f"Reading {_file(a) or 'a PDF'}",
-        "read_text": f"Reading {_file(a) or 'a document'}",
-        "look_at_image": f"Looking at {_file(a) or 'an image'}",
+        "read_pdf": f"Reading {_file_(a) or 'a PDF'}",
+        "read_text": f"Reading {_file_(a) or 'a document'}",
+        "look_at_image": f"Looking at {_file_(a) or 'an image'}",
         "research_macro": f"Researching {len(a.get('countries') or [])} countries’ macro data with subagents",
         "delegate_research": f"Delegating a research question: {_s(a.get('label') or a.get('question'), 60)}",
         "build_macro_table": "Building the macro table from verified figures",
         "web_search": f"Searching the web for “{_s(a.get('query'), 70)}”",
         "web_fetch": f"Reading {_host(a.get('url'))}",
-        "excel_sheets": f"Opening {_file(a) or 'a workbook'}",
-        "excel_find_value": f"Looking up “{_s(a.get('label'), 40)}” in {_file(a) or 'a workbook'}",
-        "excel_dump_region": f"Reading the {_s(a.get('sheet'), 40)} sheet of {_file(a) or 'a workbook'}",
+        "excel_sheets": f"Opening {_file_(a) or 'a workbook'}",
+        "excel_find_value": f"Looking up “{_s(a.get('label'), 40)}” in {_file_(a) or 'a workbook'}",
+        "excel_dump_region": f"Reading the {_s(a.get('sheet'), 40)} sheet of {_file_(a) or 'a workbook'}",
         "portfolio_valuations": "Reading every company’s valuation and reconciling the two sources",
         "fund_capital_position": "Working out the Fund’s capital position",
         "financial_statements": "Reading the financial statements",

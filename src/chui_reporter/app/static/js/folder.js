@@ -17,6 +17,8 @@ const MAX_BYTES = 60 * 1024 * 1024;
 const WATCH_MS = 15000;
 const SETTLE_MS = 2500;                    // a file saved this recently may still be being written
 const ignored = (n) => n.startsWith('.') || n.startsWith('~$') || /^(thumbs\.db|desktop\.ini)$/i.test(n);
+// Folders that are never report sources (code and caches), so a folder that happens to contain a project does not flood the sync.
+const skipDir = (n) => /^(node_modules|__pycache__|site-packages|venv|env)$/i.test(n);
 
 // ---- remembered handle (IndexedDB) ----------------------------------------------------------
 const db = () => new Promise((res, rej) => {
@@ -39,7 +41,7 @@ async function* walkHandle(dir, prefix = '', depth = 0) {
   if (depth > 8) return;
   for await (const [name, h] of dir.entries()) {
     if (ignored(name)) continue;
-    if (h.kind === 'directory') { yield* walkHandle(h, `${prefix}${name}/`, depth + 1); continue; }
+    if (h.kind === 'directory') { if (!skipDir(name)) yield* walkHandle(h, `${prefix}${name}/`, depth + 1); continue; }
     let f; try { f = await h.getFile(); } catch { continue; }
     yield { path: prefix + name, size: f.size, mtime: f.lastModified, file: async () => (await h.getFile()) };
   }
@@ -50,7 +52,7 @@ const listSource = (files) => {
   return { name: first, watch: false, async *walk() {
     for (const f of files) {
       const parts = f.webkitRelativePath.split('/').slice(1);
-      if (!parts.length || parts.some(ignored)) continue;
+      if (!parts.length || parts.some(ignored) || parts.slice(0, -1).some(skipDir)) continue;
       yield { path: parts.join('/'), size: f.size, mtime: f.lastModified, file: async () => f };
     }
   } };
@@ -121,8 +123,13 @@ export async function syncNow({ force = false } = {}) {
     }
     if (moved()) return;
     set({ phase: 'committing', progress: null });
-    const res = await post('/api/sync/commit', { manifest, period: code, folder: source.name });
+    const skippedNow = [...tooLarge, ...(plan.too_large || [])];
+    const res = await post('/api/sync/commit', { manifest, period: code, folder: source.name, skipped: skippedNow });
     persistHashes(code);
+    const ch = res.changes || {};
+    if ((ch.added?.length || ch.modified?.length || ch.removed?.length) && qcode() === code) {
+      model.syncDone = { at: Date.now(), period: code, res: { ...res, skipped: skippedNow } };          // what the page shows as "sync complete"
+    }
     set({ phase: source.watch ? 'watching' : 'manual', checkedAt: Date.now(), tooLarge: [...tooLarge, ...(plan.too_large || [])] });
     if (tooLarge.length) toast(`${tooLarge.length} file${tooLarge.length > 1 ? 's are' : ' is'} over 60 MB and was skipped.`, 'warn');
     emit('synced', res);

@@ -28,6 +28,7 @@ from ..agent.store import Store
 from ..runtime import state
 from ..runtime.runner import Runtime
 from ..workspace import sync as ws_sync
+from ..workspace.slots import is_durable
 from . import dev as devroutes
 from . import pages
 from .auth import COOKIE, Auth
@@ -243,12 +244,14 @@ def create_app(runtime: Runtime | None = None, auth: Auth | None = None) -> Fast
         ws = _quarter(rt, body.get("period"))
         manifest = _clean_manifest(body.get("manifest"))
         folder = str(body.get("folder") or "").strip()[:120] or None
+        skipped = [str(x) for x in (body.get("skipped") or [])][:20] if isinstance(body.get("skipped"), list) else []
         try:
-            changes = await run_in_threadpool(ws_sync.commit, rt.store, manifest, ws, folder)
+            changes = await run_in_threadpool(ws_sync.commit, rt.store, manifest, ws, folder, skipped)
         except ws_sync.SyncError as exc:
             raise HTTPException(409, str(exc)) from exc
-        result = await run_in_threadpool(rt.on_sync, changes)
-        return {"changes": changes.as_dict(), **result}
+        result = await run_in_threadpool(rt.on_sync, changes, folder)
+        return {"changes": changes.as_dict(), "folder": folder, "files": len(manifest),
+                "brand": sum(1 for f in manifest if is_durable(f["path"])), **result}
 
     @app.post("/api/sources/clear")
     async def sources_clear(request: Request, body: dict = Body(default={})):

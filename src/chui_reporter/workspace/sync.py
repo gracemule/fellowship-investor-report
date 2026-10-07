@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
@@ -129,21 +130,27 @@ def put_file(store: Store, path: str, data: bytes, sha256: str, mtime: float | N
     return True
 
 
-def commit(store: Store, manifest: list[dict], workspace: str = WORKSPACE, folder: str | None = None) -> Changes:
+def commit(store: Store, manifest: list[dict], workspace: str = WORKSPACE, folder: str | None = None,
+           skipped: list[str] | None = None) -> Changes:
     """Record the folder's new state. Quarter files absent from the manifest are marked removed; the brand kit never
     is (it stands until the user changes it). Returns what changed since the previous commit (not since the last
-    upload). `folder` is the name of the user's folder, kept so the page can say where the files came from."""
+    upload). `folder` is the name of the user's folder, kept so the page can say where the files came from; `skipped` are
+    files it holds that were not sent (too large). A summary of the sync is kept for the page ("what was synced"), rewritten
+    only when something changed, so the 15-second look at an unchanged folder does not wipe it."""
     wanted_all = {safe_path(f["path"]): f["sha256"] for f in manifest}
     shared = {p: h for p, h in wanted_all.items() if is_durable(p)}
     wanted = {p: h for p, h in wanted_all.items() if p not in shared}
     ch = Changes()
     t = store._t
     with store.conn() as c:
-        def state_of(ws: str) -> dict[str, str]:
-            row = c.execute(f"SELECT synced_state FROM {t('workspace')} WHERE id=%s", (ws,)).fetchone()
-            return (row["synced_state"] if row else {}) or {}
+        def row_of(ws: str) -> dict:
+            return c.execute(f"SELECT synced_state, settings FROM {t('workspace')} WHERE id=%s", (ws,)).fetchone() or {}
 
-        before, before_shared = state_of(workspace), state_of(SHARED)
+        def state_of(ws: str) -> dict[str, str]:
+            return (row_of(ws).get("synced_state") or {})
+
+        mine = row_of(workspace)
+        before, before_shared = (mine.get("synced_state") or {}), state_of(SHARED)
         have = {r["path"]: r["sha256"] for r in c.execute(
             f"SELECT path, sha256 FROM {t('source_file')} WHERE workspace_id=%s AND status='present'", (workspace,))}
         have_shared = {r["path"]: r["sha256"] for r in c.execute(
@@ -166,11 +173,16 @@ def commit(store: Store, manifest: list[dict], workspace: str = WORKSPACE, folde
             elif before_shared[p] != h:
                 ch.modified.append(p)
         ch.removed = [p for p in before if p not in wanted]
+        patch: dict = {"folder": folder} if folder else {}
+        if ch.any or not (mine.get("settings") or {}).get("last_sync"):
+            patch["last_sync"] = {"at": datetime.now(timezone.utc).isoformat(), "folder": folder, "files": len(wanted_all), "brand": len(shared),
+                                  "added": len(ch.added), "modified": len(ch.modified), "removed": len(ch.removed),
+                                  "skipped": [str(x)[:200] for x in (skipped or [])][:20]}
         c.execute(
             f"""INSERT INTO {t('workspace')} AS w (id, synced_state, last_sync_at, settings) VALUES (%s,%s,now(),%s)
                 ON CONFLICT (id) DO UPDATE SET synced_state=EXCLUDED.synced_state, last_sync_at=now(),
                   settings = w.settings || EXCLUDED.settings""",
-            (workspace, Jsonb(wanted), Jsonb({"folder": folder} if folder else {})))
+            (workspace, Jsonb(wanted), Jsonb(patch)))
         if shared:
             c.execute(
                 f"""INSERT INTO {t('workspace')} (id, synced_state, last_sync_at) VALUES (%s,%s,now())
@@ -188,7 +200,7 @@ def clear_quarter(store: Store, workspace: str, keep_attachments: bool = True) -
             f"WHERE workspace_id=%s AND status='present' AND NOT (%s AND path LIKE %s) RETURNING path",
             (workspace, keep_attachments, UPLOADS + "%")))
         c.execute(f"UPDATE {store._t('workspace')} SET synced_state='{{}}'::jsonb, last_sync_at=NULL, "
-                  f"settings = settings - 'folder' WHERE id=%s", (workspace,))
+                  f"settings = settings - 'folder' - 'last_sync' WHERE id=%s", (workspace,))
     return len(rows)
 
 

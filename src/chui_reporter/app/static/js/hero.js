@@ -6,7 +6,7 @@
 
 import { post } from './api.js';
 import * as folder from './folder.js';
-import { model, subscribe } from './live.js';
+import { emit, model, subscribe } from './live.js';
 import { $, ICON, ago, clear, h, list, plural, svg, tok, toast } from './util.js';
 
 const SYNCING = new Set(['scanning', 'hashing', 'uploading', 'committing']);
@@ -52,6 +52,35 @@ function questionView(q, S) {
     h('p', { class: 'detail faint' }, (q.options || []).length ? 'Or type your own answer in the box below.' : 'Type your answer in the box below.'),
     h('div', { class: 'actions' }, link('Decide for me', () => post(`/api/questions/${q.id}/answer`, { skip: true }))),
   ] };
+}
+
+// "Sync complete": what just arrived, in one glance, for a few seconds. The full receipt stays under Sources.
+const SYNC_DONE_MS = 15000;
+const syncDoneLive = (S) => model.syncDone && model.syncDone.period === S.period.code && Date.now() - model.syncDone.at < SYNC_DONE_MS;
+
+function syncDoneView(S) {
+  const d = model.syncDone, ch = d.res.changes || {};
+  const cov = S.coverage || [];
+  const req = cov.filter((c) => c.required), reqReady = req.filter((c) => c.state === 'ready');
+  const optional = cov.filter((c) => !c.required && c.state === 'ready' && !c.note).length;
+  const odd = (S.unplaced || []).length, skipped = (d.res.skipped || []).length;
+  const files = d.res.files ?? S.workspace.files;
+  const brand = d.res.brand ?? 0;
+  const own = Math.max(0, files - brand);
+  const what = brand ? `${plural(own, 'file')} for ${S.period.label} and the brand kit (${plural(brand, 'file')}, kept for every quarter)` : plural(files, 'file');
+  const required = reqReady.length === req.length ? `All ${req.length} required sources are in${optional ? `, plus ${optional} optional` : ''}.` : `${reqReady.length} of ${req.length} required sources are in.`;
+  const nodes = [
+    eyebrow('Sync complete', 'ok'),
+    h('h1', { class: 'headline' }, `${plural(files, 'file')} synced`),
+    h('p', { class: 'detail' }, `From “${d.res.folder || S.workspace.folder || 'your folder'}”: ${what}. ${required}${odd ? ` ${plural(odd, 'file')} not matched to a source.` : ''}${skipped ? ` ${skipped} skipped as too large.` : ''}`),
+  ];
+  if (S.status.phase === 'needs_sources' || S.status.phase === 'attention') nodes.push(h('p', { class: 'detail faint' }, S.status.detail));
+  const actions = h('div', { class: 'actions' });
+  const act = S.status.action;
+  if (act && ['build', 'update'].includes(act.id)) actions.append(primary(act.label, () => post('/api/run', {})));
+  actions.append(link('See what was synced', () => emit('goto-tab', 'sources')));
+  nodes.push(actions);
+  return { key: `done:${d.at}:${S.status.phase}:${reqReady.length}:${odd}`, nodes };
 }
 
 function syncView() {
@@ -125,7 +154,8 @@ export function mountHero(root) {
     if (!S) return;
     const f = model.folder;
     const q = S.questions?.[0];
-    const view = q ? questionView(q, S) : SYNCING.has(f.phase) ? syncView() : statusView(S);
+    const settled = !q && !SYNCING.has(f.phase) && S.status.phase !== 'working' && syncDoneLive(S);
+    const view = q ? questionView(q, S) : SYNCING.has(f.phase) ? syncView() : settled ? syncDoneView(S) : statusView(S);
     if (view.key === key) { patchProgress(); return; }
     key = view.key;
     clear(root).append(...view.nodes.filter(Boolean));
@@ -140,7 +170,10 @@ export function mountHero(root) {
     if (d) d.textContent = syncDetail();
     if (b && p?.total) b.style.width = `${(p.done / p.total) * 100}%`;
   };
-  subscribe((what) => { if (what === 'state' || what === 'folder' || what === 'online' || what === 'quarter') render(); });
+  subscribe((what) => {
+    if (what === 'state' || what === 'folder' || what === 'online' || what === 'quarter') render();
+    if (what === 'synced') { render(); setTimeout(() => { key = ''; render(); }, SYNC_DONE_MS + 300); }
+  });
   setInterval(() => { if (model.state?.status.phase === 'current') { key = ''; render(); } }, 30000);   // "4 min ago" stays true
   render();
 }

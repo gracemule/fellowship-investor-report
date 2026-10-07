@@ -66,6 +66,15 @@ Non-secret settings are already on the services. Secrets live only in the Render
    `python -m chui_reporter.render.check_converter` (with `CHUI_PDF_CONVERTER=remote` and the two converter settings) must
    report that Larken is in the PDF.
 
+## Returning a quarter to blank (for a demo, or after a wrong start)
+
+    python -m chui_reporter.admin reset-quarter 2026Q2            # shows what it would delete
+    python -m chui_reporter.admin reset-quarter 2026Q2 --apply    # does it (add --brand to remove the shared brand kit too)
+
+It removes that quarter's synced files, report, figures, review notes, runs, conversations (and the agent's saved memory) and feed,
+and the cache of web pages the researchers read. It refuses while a run is active, runs as one transaction, and never touches
+another quarter.
+
 ## Database size (Neon free tier)
 
 The app's own data is small (tens of MB). The agent's saved checkpoints were the only thing that grew; they are pruned as the agent

@@ -30,6 +30,7 @@ export function mountSources(root, tabCount) {
         h('div', { class: 'big' }, none ? (srv.last_sync_at ? `${srv.folder ? `“${srv.folder}”` : 'The folder'} has no ${label} files` : `No folder for ${label} yet`)
           : needed.length ? `${needed.length} required ${needed.length === 1 ? 'source is' : 'sources are'} missing` : 'Everything required is in'),
         h('div', { class: 'small' }, `${ready.length} of ${cov.length}`)),
+      receipt(S),
       h('div', { class: 'watching' },
         h('span', { class: 'dot', 'data-s': f.name && !f.needsPermission ? 'ok' : '' }),
         h('span', { id: 'watch-text' }, watchText()),
@@ -105,6 +106,19 @@ export function mountSources(root, tabCount) {
         h('p', { class: 'small', style: { margin: '6px 0 8px' } }, 'These files are in your folder, but no part of the report uses them.'),
         h('ul', { class: 'slot files', style: { padding: '0 0 12px' } }, S.unplaced.slice(0, 20).map((p) => h('li', {}, p)))) : '');
     root.scrollTop = keep;
+  };
+
+  // What the last sync brought in, kept on the server so it is there after a reload.
+  const receipt = (S) => {
+    const ls = S.workspace.last_sync;
+    if (!ls) return '';
+    const odd = (S.unplaced || []).length;
+    const bits = [ls.brand ? `${plural(ls.files, 'file')} (${ls.brand} brand kit)` : plural(ls.files, 'file'), `${ls.added} new`, ls.modified ? `${ls.modified} updated` : null, ls.removed ? `${ls.removed} removed` : null,
+      odd ? `${plural(odd, 'file')} not matched to a source` : null, ls.skipped?.length ? `${ls.skipped.length} skipped (too large)` : null].filter(Boolean);
+    return h('div', { class: 'receipt' },
+      h('div', { class: 'r1' }, svg(ICON.check, { size: 14, stroke: 2 }), `Synced ${ago(ls.at)} from “${ls.folder || S.workspace.folder || 'your folder'}”`),
+      h('div', { class: 'r2' }, bits.join(' · ')),
+      ls.skipped?.length ? h('ul', { class: 'r3' }, ls.skipped.map((p) => h('li', {}, p))) : null);
   };
 
   const watchText = () => {

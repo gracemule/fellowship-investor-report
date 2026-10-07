@@ -3,7 +3,7 @@ import { mountActivity } from './activity.js';
 import * as folder from './folder.js';
 import { mountComposer } from './composer.js';
 import { mountHero } from './hero.js';
-import { start } from './live.js';
+import { start, subscribe } from './live.js';
 import { mountMenu } from './menu.js';
 import { mountSessions } from './sessions.js';
 import { mountNotes } from './notes.js';
@@ -51,6 +51,7 @@ tabs.addEventListener('keydown', (e) => {
   n.focus(); selectTab(n.dataset.tab);
 });
 addEventListener('resize', moveInk);
+subscribe((what, name) => { if (what === 'goto-tab') selectTab(name); });
 
 // ---- mobile pane switch --------------------------------------------------------------------------
 $('#switch').addEventListener('click', (e) => {

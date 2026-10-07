@@ -117,6 +117,7 @@ class Runtime:
         self._ws_at = 0.0
         self._session: dict | None = None
         self._session_at = 0.0
+        self._names: list[str] | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -310,15 +311,15 @@ class Runtime:
 
     # ------------------------------------------------------------------ requests from the UI
 
-    def on_sync(self, changes: ws_sync.Changes) -> dict:
+    def on_sync(self, changes: ws_sync.Changes, folder: str | None = None) -> dict:
         """The folder changed. Record it, resume anything waiting for it, and (if automatic
         updating is on) schedule the update."""
         if not changes.any:
             return {"started": None}
         slots = ws_sync.affected_slots(changes.paths)
         sections = ws_sync.affected_sections(changes.paths)
-        state.emit(self.store, "source.sync", self._sync_label(changes), detail={
-            **changes.as_dict(), "slots": [s.id for s in slots], "sections": sections})
+        state.emit(self.store, "source.sync", self._sync_label(changes, folder), detail={
+            **changes.as_dict(), "slots": [s.id for s in slots], "sections": sections, "folder": folder})
         with self._lock:
             self._pending.added += [p for p in changes.added if p not in self._pending.added]
             self._pending.modified += [p for p in changes.modified if p not in self._pending.modified]
@@ -329,12 +330,14 @@ class Runtime:
         return {"started": None, "sections": sections}
 
     @staticmethod
-    def _sync_label(ch) -> str:
+    def _sync_label(ch, folder: str | None = None) -> str:
         bits = []
-        for n, w in ((len(ch.added), "added"), (len(ch.modified), "updated"), (len(ch.removed), "removed")):
+        for n, w in ((len(ch.added), "new"), (len(ch.modified), "updated"), (len(ch.removed), "removed")):
             if n:
                 bits.append(f"{n} {w}")
-        return "Your folder changed: " + ", ".join(bits)
+        total = len(ch.added) + len(ch.modified)
+        head = f"Synced {total} file{'s' if total != 1 else ''}" if total else "Folder changed"
+        return head + (f" from “{folder}”" if folder else "") + ": " + ", ".join(bits)
 
     def auto(self) -> bool:
         return bool(self.ws_row()["settings"].get("auto", True))
@@ -615,10 +618,20 @@ class Runtime:
         src = self.workdir / "source"
         n = ws_sync.materialize(self.store, src, self.files_ws(), extra=self.prior_baseline())
         config.set_root(src)
+        self._names = None
         report_writer.OUT_DIR = self.workdir / "out"
         return n
 
     # -- agent
+
+    def _source_names(self) -> list[str]:
+        """File names in the sources, so the feed can say 'LAMI valuation report' where the agent said '06' (read once per run)."""
+        if self._names is None:
+            try:
+                self._names = sorted({p.name for p in config.SOURCE_ROOT.rglob("*") if p.is_file()})
+            except Exception:       # noqa: BLE001
+                self._names = []
+        return self._names
 
     def _provider(self) -> str | None:
         return self.provider_override
@@ -948,7 +961,7 @@ class Runtime:
                 return None
             steer = None
             for c in calls:
-                chapter, label = narrator.describe_call(c["name"], c.get("args") or {})
+                chapter, label = narrator.describe_call(c["name"], c.get("args") or {}, self._source_names())
                 state.emit(self.store, "step", label, run_id=rid, chapter=chapter,
                            detail={"call": c["id"], "tool": c["name"], "status": "running"})
                 steer = steer or guard.observe(c["name"], c.get("args") or {})

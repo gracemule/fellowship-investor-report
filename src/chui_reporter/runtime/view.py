@@ -101,6 +101,7 @@ def build(rt) -> dict:
 
     return {
         "workspace": {"name": ws["name"], "last_sync_at": synced_at, "folder": folder,
+                      "last_sync": (fws.get("settings") or {}).get("last_sync"),
                       "auto": bool((ws.get("settings") or {}).get("auto", True)), "files": len(files)},
         "period": {"code": period.code, "label": period.label, "prev": period.prev.label, "prev_code": period.prev.code,
                    "next": period.next.label, "next_code": period.next.code, "end": period.end_label,
