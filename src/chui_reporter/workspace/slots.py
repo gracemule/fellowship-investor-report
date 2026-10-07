@@ -24,6 +24,7 @@ class Slot:
     hint: str                     # what to put there, in plain words
     minimum: int = 1
     durable: bool = False         # stands from quarter to quarter (the brand kit): uploaded once, never asked for again
+    system: bool = False          # set up once for the whole system, not part of any quarter's checklist (shown under Services)
 
 
 SLOTS: tuple[Slot, ...] = (
@@ -48,9 +49,9 @@ SLOTS: tuple[Slot, ...] = (
     Slot("pipeline", "Subsequent events and pipeline", "Pipeline and subsequent events",
          ("*.pdf", "*.docx"), False, ("1.5",), "Facility drawdowns, approvals, signed letters."),
     Slot("brand_logos", "Brand logos", "Branding", ("cv_logo_*.png", "cv_icon_*.png"), True, (),
-         "The Chui Ventures logo and icon PNGs (the Branding folder).", durable=True),
+         "The Chui Ventures logo and icon PNGs (the Branding folder).", durable=True, system=True),
     Slot("brand_fonts", "Brand fonts", "Branding", ("larken*.ttf",), True, (),
-         "The Larken font files the report is typeset in (Branding/Fonts/Larken).", minimum=3, durable=True),
+         "The Larken font files the report is typeset in (Branding/Fonts/Larken).", minimum=3, durable=True, system=True),
     Slot("macro", "Macroeconomic data", "Macro and Context", ("*",), False, ("3.1",),
          "Country indicators (GDP, inflation, policy rates, FX) for the markets you invest in."),
     Slot("gp_statement", "General Partner statement", "GP statement", ("*",), False, ("1.5",),

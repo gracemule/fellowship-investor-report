@@ -300,7 +300,7 @@ class SlotStatus:
         return {"id": self.slot.id, "label": self.slot.label, "folder": self.slot.folder,
                 "required": self.slot.required, "state": self.state, "count": len(self.files),
                 "files": self.files, "modified": self.modified, "unlocks": list(self.slot.unlocks),
-                "hint": self.slot.hint, "durable": self.slot.durable, "note": self.note}
+                "hint": self.slot.hint, "durable": self.slot.durable, "system": self.slot.system, "note": self.note}
 
 
 def coverage_of(paths: list[str], changed: list[str] | None = None, prior: dict | None = None) -> list[SlotStatus]:
@@ -322,7 +322,17 @@ def coverage(store: Store, changed: list[str] | None = None, workspace: str = WO
 
 
 def required_missing(cov: list[SlotStatus]) -> list[SlotStatus]:
+    """Everything a report cannot be built without, the brand kit included."""
     return [c for c in cov if c.state == "missing"]
+
+
+def user_missing(cov: list[SlotStatus]) -> list[SlotStatus]:
+    """What the user still has to provide for this quarter (the system's brand kit is not theirs to provide each time)."""
+    return [c for c in cov if c.state == "missing" and not c.slot.system]
+
+
+def system_missing(cov: list[SlotStatus]) -> list[SlotStatus]:
+    return [c for c in cov if c.state == "missing" and c.slot.system]
 
 
 def unplaced(store: Store, workspace: str = WORKSPACE) -> list[str]:

@@ -75,6 +75,11 @@ It removes that quarter's synced files, report, figures, review notes, runs, con
 and the cache of web pages the researchers read. It refuses while a run is active, runs as one transaction, and never touches
 another quarter.
 
+The brand kit (logos and fonts) is installed once for every quarter and is not removed by this unless asked. A database that
+has never held it (or lost it with `--brand`) gets it back, without opening the app, with:
+
+    python -m chui_reporter.admin install-brand "/path/to/folder"   # the folder that contains Branding; nothing else is read
+
 ## Database size (Neon free tier)
 
 The app's own data is small (tens of MB). The agent's saved checkpoints were the only thing that grew; they are pruned as the agent

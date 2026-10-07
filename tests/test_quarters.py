@@ -73,6 +73,54 @@ def test_the_brand_kit_is_stored_once_and_serves_every_quarter(store):
     assert {c.slot.id for c in sync.required_missing(sync.coverage(store, workspace=Q3))} >= {"delaware", "fund_model"}
 
 
+QUARTER_FILES = ["Fund Financials/Fund I, LP Financial Package.pdf", "Fund Financials/Chui Ventures LP.xlsx",
+                 "Portfolio Company Data/Fund Model.xlsx", "Portfolio Company Data/Portfolio Metrics.xlsx",
+                 "Valuation Reports/Acme.xlsx", "Prior Period Baseline/Previous Report.pdf"]
+
+
+def test_the_brand_kit_is_the_systems_and_never_on_a_quarters_checklist(store, rt):
+    rt.set_period(Q2)
+    sync.commit(store, [_put(store, Q2, p) for p in QUARTER_FILES], Q2, folder="q2 data")
+    cov = sync.coverage(store, workspace=Q2)
+    assert {c.slot.id for c in sync.required_missing(cov)} == {"brand_logos", "brand_fonts"}
+    assert sync.user_missing(cov) == [], "everything the quarter itself needs is there; nothing is asked of the user"
+    assert {c.slot.id for c in sync.system_missing(cov)} == {"brand_logos", "brand_fonts"}
+    snap = rt.snapshot_state()
+    assert snap["status"]["phase"] == "needs_brand" and "kept for every quarter" in snap["status"]["detail"]
+    assert {c["id"] for c in snap["coverage"] if c["system"]} == {"brand_logos", "brand_fonts"}
+    sync.commit(store, [_put(store, Q2, p) for p in QUARTER_FILES] + _brand(store, Q2), Q2)       # installed once ...
+    assert rt.snapshot_state()["status"]["phase"] == "ready"
+    rt.set_period(Q3)                                              # ... and a quarter that has its own files never hears of it again
+    sync.commit(store, [_put(store, Q3, p) for p in QUARTER_FILES], Q3)
+    assert not sync.required_missing(sync.coverage(store, workspace=Q3))
+    assert rt.snapshot_state()["status"]["phase"] == "ready"
+
+
+def test_an_operator_installs_the_brand_kit_once_and_a_folder_with_the_same_files_changes_nothing(store, tmp_path):
+    from chui_reporter import admin
+
+    brand = tmp_path / "Branding"
+    for p in FONTS:
+        f = tmp_path / p
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"font:" + p.encode())
+    (tmp_path / LOGO).write_bytes(b"png")
+    (tmp_path / "Branding" / ".DS_Store").write_bytes(b"junk")
+    (tmp_path / "Fund Financials").mkdir()
+    (tmp_path / "Fund Financials" / "LP.xlsx").write_bytes(b"not part of the kit")
+    rep = admin.install_brand(store, tmp_path)
+    assert rep == {"files": 4, "stored": 4, "logos": "ready", "fonts": "ready"}
+    assert sorted(_paths(store, sync.SHARED)) == sorted(FONTS + [LOGO]), "only the kit, and nothing of the quarter"
+    for q in (Q2, Q3):
+        cov = {c.slot.id: c.state for c in sync.coverage(store, workspace=q)}
+        assert cov["brand_logos"] == cov["brand_fonts"] == "ready"
+    seen = [{"path": p, "sha256": _h(b"font:" + p.encode())} for p in FONTS] + [{"path": LOGO, "sha256": _h(b"png")}]
+    assert not sync.commit(store, seen, Q2).any, "the same kit arriving in a folder is not a change"
+    assert admin.install_brand(store, brand)["stored"] == 0, "pointing at Branding itself works, and nothing is stored twice"
+    with pytest.raises(FileNotFoundError):
+        admin.install_brand(store, tmp_path / "Fund Financials")
+
+
 def test_a_changed_brand_file_is_a_change_and_an_unchanged_one_is_not(store):
     m = _brand(store, Q2)
     assert sorted(sync.commit(store, m, Q2).added) == sorted(FONTS + [LOGO])

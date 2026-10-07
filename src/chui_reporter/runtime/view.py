@@ -45,7 +45,8 @@ def build(rt) -> dict:
     questions = rows["questions"]
     versions = rows["versions"]
     version = versions[0] if versions else None
-    missing = ws_sync.required_missing(cov)
+    missing = ws_sync.user_missing(cov)
+    brand_missing = ws_sync.system_missing(cov)
     pending = rt._pending.any
     active = bool(run and run["status"] in state.ACTIVE)
     files = quarter_files
@@ -81,6 +82,11 @@ def build(rt) -> dict:
         phase, headline = "needs_sources", f"{len(missing)} {'thing' if len(missing) == 1 else 'things'} still needed"
         detail = "Add " + _labels([m.slot.label for m in missing]) + "."
         action = {"id": "pick", "label": "Add files"}
+    elif brand_missing:
+        phase, headline = "needs_brand", "The brand kit is not installed yet"
+        detail = ("Choose a folder that contains your Branding folder, once. It is kept for every quarter, so this is never asked "
+                  "for again.")
+        action = {"id": "pick", "label": "Choose folder"}
     elif run and run["status"] in ("failed", "incomplete", "stopped") and (
             not version or run["created_at"] > version["created_at"]):
         phase = "attention"

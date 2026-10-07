@@ -61,8 +61,8 @@ const syncDoneLive = (S) => model.syncDone && model.syncDone.period === S.period
 function syncDoneView(S) {
   const d = model.syncDone, ch = d.res.changes || {};
   const cov = S.coverage || [];
-  const req = cov.filter((c) => c.required), reqReady = req.filter((c) => c.state === 'ready');
-  const optional = cov.filter((c) => !c.required && c.state === 'ready' && !c.note).length;
+  const req = cov.filter((c) => c.required && !c.system), reqReady = req.filter((c) => c.state === 'ready');
+  const optional = cov.filter((c) => !c.required && !c.system && c.state === 'ready' && !c.note).length;
   const odd = (S.unplaced || []).length, skipped = (d.res.skipped || []).length;
   const files = d.res.files ?? S.workspace.files;
   const brand = d.res.brand ?? 0;
@@ -115,8 +115,8 @@ function statusView(S) {
   const st = S.status, f = model.folder;
   const files = S.workspace.files;
   const offline = !model.online;
-  const tone = { working: 'working', current: 'ok', attention: 'bad', waiting_user: 'ask', waiting_data: 'ask', stale: 'ask', ready: 'ask', empty_folder: 'ok' }[st.phase] || '';
-  const eb = offline ? 'Reconnecting' : { empty: `${S.period.label} · Get started`, empty_folder: `${S.period.label} · Folder connected`, needs_sources: 'Almost there', ready: 'Ready', working: 'Working',
+  const tone = { working: 'working', current: 'ok', attention: 'bad', waiting_user: 'ask', waiting_data: 'ask', stale: 'ask', ready: 'ask', empty_folder: 'ok', needs_brand: 'ask' }[st.phase] || '';
+  const eb = offline ? 'Reconnecting' : { empty: `${S.period.label} · Get started`, empty_folder: `${S.period.label} · Folder connected`, needs_sources: 'Almost there', needs_brand: 'Brand kit', ready: 'Ready', working: 'Working',
     stale: 'Folder changed', attention: 'Needs attention', current: 'Up to date', waiting_data: 'Waiting', waiting_user: 'Waiting' }[st.phase] || '';
   const nodes = [eyebrow(eb, offline ? 'bad' : tone), h('h1', { class: 'headline' }, st.headline)];
   let detail = st.detail;
@@ -127,7 +127,7 @@ function statusView(S) {
   if (detail) nodes.push(h('p', { class: 'detail', id: 'hero-detail' }, detail));
 
   if (st.phase === 'needs_sources' && f.name && !f.needsPermission) {
-    const n = (S.coverage || []).filter((c) => c.state === 'missing').length;
+    const n = (S.coverage || []).filter((c) => c.state === 'missing' && !c.system).length;
     nodes.push(h('p', { class: 'detail faint' }, `Add ${n === 1 ? 'it' : 'them'} to “${f.name}” and ${n === 1 ? 'it is' : 'they are'} picked up on their own. The full list is under Sources.`));
   }
   if (st.phase === 'working') nodes.push(h('div', { class: 'bar indet' }, h('i')), h('p', { class: 'ctx', id: 'hero-ctx' }, ctxText()));
@@ -136,7 +136,7 @@ function statusView(S) {
   const a = st.action;
   const connected = f.name && !f.needsPermission;
   if (a?.id === 'pick') {
-    if (!connected || st.phase === 'empty') actions.append(primary(f.needsPermission ? `Reconnect to ${f.name}` : 'Choose folder', pickOrReconnect));
+    if (!connected || st.phase === 'empty' || st.phase === 'needs_brand') actions.append(primary(f.needsPermission ? `Reconnect to ${f.name}` : 'Choose folder', pickOrReconnect));
     else actions.append(link('Check the folder now', () => folder.checkNow()));
   } else if (a?.id === 'stop') { /* the send button becomes Stop while the agent works */ }
   else if (a) actions.append(primary(a.label, () => post(a.id === 'resume' ? '/api/run/resume' : '/api/run', {})));

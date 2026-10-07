@@ -14,7 +14,9 @@ export function mountSources(root, tabCount) {
   const render = () => {
     const S = model.state;
     if (!S) return;
-    const cov = S.coverage || [];
+    const all = S.coverage || [];
+    const cov = all.filter((c) => !c.system);                 // the brand kit is the system's, not part of the quarter's checklist
+    const brand = all.filter((c) => c.system);
     const needed = cov.filter((c) => c.state === 'missing');
     const ready = cov.filter((c) => c.state === 'ready');
     const optional = cov.filter((c) => c.state === 'absent');
@@ -94,6 +96,10 @@ export function mountSources(root, tabCount) {
       group('optional', 'Optional', optional) || '',
       srv.files ? manage(S) : '',
       svc ? h('div', { class: 'group' }, h('h3', {}, 'Services'),
+        brand.length ? h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'Brand kit'),
+          h('div', { class: 'svc-row', 'data-state': brand.every((c) => c.state === 'ready') ? 'ok' : 'unset' },
+            h('span', {}, 'Logos and fonts'),
+            h('span', {}, brand.every((c) => c.state === 'ready') ? 'Installed · kept for every quarter' : 'Not installed · add a folder that has a Branding folder, once'))) : '',
         h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'Web search (for macro data)'), ...svc.search.map(providerLine)),
         h('div', { class: 'svc' }, h('div', { class: 'svc-title' }, 'PDF conversion'),
           h('div', { class: 'svc-row', 'data-state': conv.ready ? 'ok' : 'unset' },

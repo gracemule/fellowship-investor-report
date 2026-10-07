@@ -85,10 +85,12 @@ the hosted converter would work unchanged. The font files themselves are never m
 **Each quarter is a clean slate.** Choosing another quarter shows that quarter's own folder, files, report, notes and
 conversation, and nothing of the previous one: the report area is blank until something is built, and the folder has to be
 connected again (a folder belongs to one quarter; every sync says which, and is refused if the server has moved on). Only
-things that do not change carry over: the brand kit (logos and fonts, stored once and never asked for again) and, on request,
+things that do not change carry over: the brand kit (logos and fonts) and, on request,
 the previous quarter's report (the agent reads it with `prior_quarter_report`; it also stands in for the baseline PDF, so the
 new quarter never asks for it). Synced the wrong quarter? Sources has *Move to another quarter* and *Remove synced files*
 (the brand kit is never touched). A folder that is empty is shown as connected and empty, not as "nothing chosen".
+
+**The brand kit is the system's, not a quarter's.** Logos and fonts are never on a quarter's checklist and are never "Needed": they are installed once, shown under Sources → Services (*Installed · kept for every quarter*), and used by every quarter. The first time a folder with a `Branding` folder is connected they are stored; after that no folder has to contain them, and a folder that lacks them removes nothing. If the kit has never been installed the page says so once (*The brand kit is not installed yet*) and a report is not built until it is, because the report cannot be typeset without it. An operator can install it directly: `python -m chui_reporter.admin install-brand "/path/to/folder"`.
 
 **After choosing a folder, the page says what arrived.** When a sync finishes it shows, for a few seconds, how many files came in,
 from which folder, how many were for the quarter and how many were the brand kit, whether every required source is in, and any
