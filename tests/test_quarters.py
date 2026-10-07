@@ -625,3 +625,23 @@ def test_the_feed_names_files_the_way_a_person_would():
     assert describe_call("excel_sheets", {"file_name": "Fund Model"}, names)[1] == "Opening Fund Model Cap $16.3 M (Q2 2026)"
     assert describe_call("read_pdf", {"file_name": "Financial Package"}, names)[1].startswith("Reading 06_30_2026 - CHUI VENTURES FUND I")
     assert describe_call("excel_sheets", {"file_name": "Uncover"}, [])[1] == "Opening Uncover", "without the names, as before"
+
+
+def test_the_old_command_line_report_and_the_opening_quarter_can_be_cleared_and_set(store, rt):
+    from chui_reporter import admin
+
+    old = Store(url=store.url, schema=store.schema, report_id=admin.CLI_REPORT)
+    old.ensure_report("Chui Ventures Fund I", "Q2 2026")
+    old.set_section("1.1", "Overview", "from the command line", 1)
+    old.add_facts([Fact(label="old fact", value=1.0, unit="USD", source_file="f.xlsx", source_cell="A1")])
+    keep = _populate(store, rt, Q3)
+    admin.reset_quarter(store, Q2, apply=True)
+    assert old.sections(), "not touched unless asked"
+    admin.reset_quarter(store, Q2, cli_report=True, apply=True)
+    assert old.sections() == [] and not old.grounded_values()
+    assert len(keep.sections()) == 1, "another quarter's report is untouched"
+    assert admin.set_period(store, "2026Q2") == Q2 and rt.ws_row(fresh=True)["period"] == Q2
+    rid = rt._create("build", "x")
+    state.update_run(store, rid, status="running")
+    with pytest.raises(admin.Busy):
+        admin.set_period(store, Q3)

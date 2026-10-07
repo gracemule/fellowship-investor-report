@@ -29,10 +29,22 @@ class _DryRun(Exception):
 
 
 REPORT_TABLES = ("section", "tbl", "chart", "fact", "review_note", "report_version", "subagent_run")
+CLI_REPORT = "chui-fund-i"          # the report the command-line agent (before the web app) wrote to; the web app never reads it
+
+
+def set_period(store: Store, period: str) -> str:
+    """Point the workspace at a quarter (what the page opens on). Refused while a run is active."""
+    code = pr.Period.parse(period).code
+    with store.conn() as c:
+        busy = c.execute(f"SELECT count(*) AS n FROM {store._t('run')} WHERE status = ANY(%s)", (list(state.ACTIVE),)).fetchone()["n"]
+        if busy:
+            raise Busy(f"{busy} run(s) are active or waiting for an answer; stop them first")
+    state.update_workspace(store, period=code)
+    return code
 
 
 def reset_quarter(store: Store, period: str, *, brand: bool = False, web_cache: bool = True, memory: bool = True,
-                  apply: bool = False) -> dict:
+                  cli_report: bool = False, apply: bool = False) -> dict:
     code = pr.Period.parse(period).code
     rid = f"fund-i-{code}"
     t = store._t
@@ -58,6 +70,10 @@ def reset_quarter(store: Store, period: str, *, brand: bool = False, web_cache: 
             for name in REPORT_TABLES:
                 run(name, f"DELETE FROM {t(name)} WHERE report_id=%s", (rid,))
             run("report", f"DELETE FROM {t('report')} WHERE id=%s", (rid,))
+            if cli_report:
+                for name in REPORT_TABLES:
+                    counts[f"cli_report_{name}"] = c.execute(f"DELETE FROM {t(name)} WHERE report_id=%s", (CLI_REPORT,)).rowcount
+                counts["cli_report"] = c.execute(f"DELETE FROM {t('report')} WHERE id=%s", (CLI_REPORT,)).rowcount
             run("files", f"DELETE FROM {t('source_file')} WHERE workspace_id = ANY(%s)", ([code, "default"] + (["shared"] if brand else []),))
             run("workspaces", f"DELETE FROM {t('workspace')} WHERE id = ANY(%s)", ([code] + (["shared"] if brand else []),))
             if web_cache:
@@ -88,11 +104,21 @@ def main(argv: list[str] | None = None) -> int:
     rq.add_argument("--brand", action="store_true", help="also remove the shared brand kit")
     rq.add_argument("--keep-web-cache", action="store_true", help="keep the pages the researchers read")
     rq.add_argument("--keep-memory", action="store_true", help="keep the agent's saved memory of the conversations")
+    rq.add_argument("--cli-report", action="store_true", help="also delete the report the old command-line agent wrote")
+    sp = sub.add_parser("set-period", help="open the workspace on a quarter")
+    sp.add_argument("period", help="for example 2026Q2")
     args = ap.parse_args(argv)
     load_dotenv(find_dotenv(usecwd=True), override=False)
+    if args.cmd == "set-period":
+        try:
+            print("workspace now opens on", set_period(Store(), args.period))
+            return 0
+        except Busy as exc:
+            print(f"not done: {exc}", file=sys.stderr)
+            return 2
     try:
         rep = reset_quarter(Store(), args.period, brand=args.brand, web_cache=not args.keep_web_cache,
-                            memory=not args.keep_memory, apply=args.apply)
+                            memory=not args.keep_memory, cli_report=args.cli_report, apply=args.apply)
     except Busy as exc:
         print(f"not done: {exc}", file=sys.stderr)
         return 2
