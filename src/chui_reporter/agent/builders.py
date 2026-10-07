@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from decimal import ROUND_HALF_UP, Decimal
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -132,24 +133,45 @@ def _amt(s: str) -> float:
     return -v if neg else v
 
 
+@lru_cache(maxsize=2)
+def _reader(path: str, mtime: int, size: int) -> PdfReader:
+    return PdfReader(path)
+
+
+@lru_cache(maxsize=512)
+def _page_text(path: str, mtime: int, size: int, i: int) -> str:
+    """The text of one page (0-based), laid out as printed. Reading it is slow, so it is read once however many builders ask."""
+    return _reader(path, mtime, size).pages[i].extract_text(extraction_mode="layout") or ""
+
+
+def _pdf_key(path: Path) -> tuple[str, int, int]:
+    st = Path(path).stat()
+    return str(path), st.st_mtime_ns, st.st_size
+
+
+def release_caches() -> None:
+    """Let go of what the builders kept (a heavy job is over)."""
+    _reader.cache_clear()
+    _page_text.cache_clear()
+
+
 def _page_of(path: Path, *needles: str, after: int = 0) -> int:
     """1-based page whose text contains every needle (case-insensitive). Pages are found by
     what is on them, not by number: a report that gains a page must not shift every figure."""
-    reader = PdfReader(str(path))
-    for i, pg in enumerate(reader.pages, start=1):
-        if i <= after:
+    key = _pdf_key(path)
+    for i in range(len(_reader(*key).pages)):
+        if i + 1 <= after:
             continue
-        text = " ".join((pg.extract_text(extraction_mode="layout") or "").split()).casefold()
+        text = " ".join(_page_text(*key, i).split()).casefold()
         if all(" ".join(n.split()).casefold() in text for n in needles):
-            return i
+            return i + 1
     raise ValueError(f"{path.name}: no page contains {needles}")
 
 
 def _pdf_lines(path: Path, page: int) -> list[str]:
     import unicodedata
 
-    text = PdfReader(str(path)).pages[page - 1].extract_text(extraction_mode="layout") or ""
-    text = unicodedata.normalize("NFKC", text)       # "ﬁ" -> "fi", curly quotes, non-breaking spaces
+    text = unicodedata.normalize("NFKC", _page_text(*_pdf_key(path), page - 1))       # "ﬁ" -> "fi", curly quotes, non-breaking spaces
     return [re.sub(r"[ \t]{3,}", "   ", ln).rstrip() for ln in text.splitlines() if ln.strip()]
 
 
@@ -368,8 +390,8 @@ def consolidate(store: Store) -> tuple[Rec, dict[str, float]]:
     total is computed here from named inputs."""
     rec, _ = parse_delaware(store)
     d = lambda k: rec.vals[f"Delaware balance sheet: {k}"]  # noqa: E731
-    lp = Workbook(config.lp_workpaper())
-    fm = Workbook(config.fund_model())
+    lp = Workbook.open(config.lp_workpaper())
+    fm = Workbook.open(config.fund_model())
     try:
         sr = StatementReader(lp, "LP")
         bs = sr.balance_sheet()
@@ -463,7 +485,7 @@ def build_operations(store: Store, notes: list[str] | None = None) -> str:
     L, PL = P.label, P.prev.label
     rec, n = consolidate(store)
     notes = notes if notes is not None else []
-    lp = Workbook(config.lp_workpaper())
+    lp = Workbook.open(config.lp_workpaper())
     try:
         ex = lp_quarter_expenses(lp, L, notes)
     finally:
@@ -500,7 +522,7 @@ def build_operations(store: Store, notes: list[str] | None = None) -> str:
     from ..extract.published_report import read_portfolio_performance
 
     prior_pos = {p.company: p.cost_usd for p in read_portfolio_performance(prior_report_path())}
-    fm = Workbook(config.fund_model())
+    fm = Workbook.open(config.fund_model())
     try:
         pv = fm.sheet("Portfolio Valuation")
         company_rows, _ = pv_layout(pv)
@@ -571,7 +593,7 @@ def build_operations(store: Store, notes: list[str] | None = None) -> str:
 
 def build_lp_commitments(store: Store) -> str:
     rec, n = consolidate(store)
-    fm = Workbook(config.fund_model())
+    fm = Workbook.open(config.fund_model())
     try:
         sr = fm.sheet("Summary Report")
         at = summary_layout(sr)
@@ -640,7 +662,7 @@ def _kfact(rec: Rec, label: str, usd: float, inputs: list[str], formula: str = "
 
 def build_fund_summary(store: Store) -> str:
     rec, n = consolidate(store)
-    fm = Workbook(config.fund_model())
+    fm = Workbook.open(config.fund_model())
     try:
         sr, asm = fm.sheet("Summary Report"), fm.sheet("Assumptions")
         committed = rec.value("Commitment: total equity (summary)", sr.at(summary_layout(sr)["equity"], 4, unit="USD"))
@@ -715,7 +737,7 @@ def _display_name(raw: str) -> str:
 
 def build_portfolio(store: Store) -> str:
     rec = Rec()
-    fm = Workbook(config.fund_model())
+    fm = Workbook.open(config.fund_model())
     fname = config.fund_model().name
     try:
         pv = fm.sheet("Portfolio Valuation")
@@ -810,7 +832,7 @@ _JOB_COLS = [("Total jobs", "Total Jobs"), ("Direct jobs", "Direct Jobs"), ("Ind
 
 def build_jobs(store: Store) -> str:
     rec = Rec()
-    pm = Workbook(config.portfolio_metrics())
+    pm = Workbook.open(config.portfolio_metrics())
     try:
         sh = metrics_sheet(pm)
         hdr_row = next(r for r in range(1, 60) if str(sh.raw(r, 1)).strip() == "Company" and sh.raw(r, 2) == "Total Jobs")

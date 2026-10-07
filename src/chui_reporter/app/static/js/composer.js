@@ -131,7 +131,7 @@ export function mountComposer() {
     const m = mode();
     if (m === 'idle') return;
     if (m === 'stop') {
-      try { await post('/api/run/stop'); toast('Stopping after the current step…'); } catch (e) { toast(e.message, 'bad'); }
+      try { await post('/api/run/stop', {}, { timeout: 15000 }); toast('Stopping. The agent finishes the step it is on first.'); } catch (e) { toast(e.message, 'bad'); }
       return;
     }
     if (files.some((f) => f.status === 'uploading')) { toast('Still uploading your files…', 'info'); return; }

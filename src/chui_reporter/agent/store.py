@@ -204,6 +204,7 @@ ALTER TABLE {s}.event ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS usage JSONB;
 ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS period TEXT;
+ALTER TABLE {s}.run ADD COLUMN IF NOT EXISTS stop_requested_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS event_session ON {s}.event (session_id, id);
 CREATE TABLE IF NOT EXISTS {s}.question (
     id           TEXT PRIMARY KEY,

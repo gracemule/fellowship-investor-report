@@ -19,9 +19,13 @@ Three rules this module enforces, all learned from the Q1/Q2 source files:
 
 from __future__ import annotations
 
+import gc
 import hashlib
+import os
 import re
+import threading
 import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -255,8 +259,91 @@ class Sheet:
         return f"<Sheet {self.name!r} cells={len(self._grid)}>"
 
 
+# ---- memory ---------------------------------------------------------------------------------------------------------------
+# A workbook held in memory costs about a hundred times its size on disk, and the server this runs on can be small (512 MB, of
+# which the application itself uses over 100). So workbooks are opened through `Workbook.open`, which keeps a few of them, shared,
+# and lets go of the least recently used before it would run the server out of memory, and refuses to open one when what is
+# left would not hold it (an error the agent can read) rather than letting the whole server crawl.
+_MB = 1_000_000
+_PER_BYTE = 100
+_BUDGET = int(float(os.environ.get("CHUI_WORKBOOK_CACHE_MB", "220")) * _MB)       # estimated memory the open workbooks may hold
+_LOAD = threading.Lock()
+_OPEN: OrderedDict = OrderedDict()
+
+
+def headroom() -> int | None:
+    """Bytes this container can still use before its memory limit (cache that can be dropped does not count), or None when
+    the container does not say."""
+    try:
+        base = Path("/sys/fs/cgroup")
+        if (base / "memory.max").exists():
+            raw = (base / "memory.max").read_text().strip()
+            if raw == "max":
+                return None
+            limit, used = int(raw), int((base / "memory.current").read_text())
+            stat = dict(ln.split()[:2] for ln in (base / "memory.stat").read_text().splitlines() if ln.strip())
+            used -= int(stat.get("inactive_file", 0))
+        else:
+            v1 = base / "memory"
+            limit, used = int((v1 / "memory.limit_in_bytes").read_text()), int((v1 / "memory.usage_in_bytes").read_text())
+            stat = dict(ln.split()[:2] for ln in (v1 / "memory.stat").read_text().splitlines() if ln.strip())
+            used -= int(stat.get("total_inactive_file", 0))
+        return None if limit > 1 << 50 else limit - used
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _held() -> int:
+    return sum(w._est for w in _OPEN.values())
+
+
+def _evict(need: int) -> None:
+    """Let go of the least recently used workbooks until `need` more would fit in the budget."""
+    dropped = False
+    while _OPEN and _held() + need > _BUDGET:
+        _OPEN.popitem(last=False)
+        dropped = True
+    if dropped:
+        gc.collect()                            # the sheets point back at their book, so reference counting alone does not free it
+
+
+def release_all() -> None:
+    """Let go of every shared workbook (a heavy job is over)."""
+    with _LOAD:
+        _evict(_BUDGET + 1)
+
+
 class Workbook:
     """A source workbook, opened for cached values only."""
+
+    @classmethod
+    def open(cls, path: str | Path) -> "Workbook":
+        """The shared, memory-bounded way to open a workbook: the same object for the same unchanged file, a few at a time."""
+        p = Path(path)
+        st = p.stat()                           # FileNotFoundError, as the constructor would
+        key = (str(p.resolve()), st.st_size, st.st_mtime_ns)
+        need = st.st_size * _PER_BYTE
+        with _LOAD:
+            wb = _OPEN.get(key)
+            if wb is not None:
+                _OPEN.move_to_end(key)
+                return wb
+            _evict(need)
+            room = headroom()
+            if room is not None and room < need * 1.3:
+                _evict(_BUDGET + 1)
+                room = headroom()
+                if room is not None and room < need * 1.3:
+                    raise ExtractionError(
+                        f"There is not enough memory on this server to open {p.name} right now (about {room // _MB} MB free, "
+                        f"about {int(need * 1.3) // _MB} MB needed). Other work is using it: wait for that to finish, then try again.")
+            wb = cls(p)
+            wb._shared, wb._est = True, need
+            _OPEN[key] = wb
+            return wb
+
+    _shared = False
+    _est = 0
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -288,7 +375,8 @@ class Workbook:
         return normalise_label(name) in self._sheets
 
     def close(self) -> None:
-        self._wb.close()
+        if not self._shared:                    # a shared workbook is other callers' too; it is let go of when evicted
+            self._wb.close()
 
     def __enter__(self) -> Workbook:
         return self

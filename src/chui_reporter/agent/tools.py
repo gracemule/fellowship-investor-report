@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Annotated
 
@@ -19,7 +20,7 @@ from .. import config
 from .. import period as pr
 from ..extract.published_report import read_portfolio_performance
 from ..extract.valuation import Quarter, ValuationWorkbook, discover
-from ..extract.workbook import Workbook
+from ..extract.workbook import Workbook, release_all
 from ..extract.workpaper import StatementReader, capital_calls, derive_fund_metrics
 from ..validate.reconcile import reconcile
 from .ledger import DerivationError, derive_fact, derived, fact_from_value, verify_claim, verify_claim_ex
@@ -285,7 +286,7 @@ def excel_sheets(file_name: str) -> str:
     path = _resolve_typed(file_name, (".xlsx", ".xlsm"))
     if (err := _require_excel(path)):
         return err
-    wb = Workbook(path)
+    wb = Workbook.open(path)
     names = wb.sheet_names
     wb.close()
     return f"{path.name}: {names}"
@@ -303,7 +304,7 @@ def excel_find_value(file_name: str, sheet: str, label: str,
     path = _resolve_typed(file_name, (".xlsx", ".xlsm"))
     if (err := _require_excel(path)):
         return err
-    wb = Workbook(path)
+    wb = Workbook.open(path)
     try:
         v = wb.sheet(sheet).value(label, dx=dx, dy=dy, unit="USD")
         return (f"value={v.raw!r} status={v.status} "
@@ -321,7 +322,7 @@ def excel_dump_region(file_name: str, sheet: str, first_row: int = 1,
     path = _resolve_typed(file_name, (".xlsx", ".xlsm"))
     if (err := _require_excel(path)):
         return err
-    wb = Workbook(path)
+    wb = Workbook.open(path)
     try:
         sh = wb.sheet(sheet)
         lines = []
@@ -428,7 +429,7 @@ def fund_capital_position() -> str:
     here is derived, and each figure says how. All figures are recorded in the
     fact ledger (labels listed at the end).
     """
-    wb = Workbook(config.lp_workpaper())
+    wb = Workbook.open(config.lp_workpaper())
     try:
         calls = capital_calls(wb)
         basis = wb.sheet("Management fee").value("capital committed by MEDA", dx=1, unit="USD")
@@ -500,7 +501,7 @@ def financial_statements() -> str:
     """
     from ..extract.workbook import ExtractionError
 
-    wb = Workbook(config.lp_workpaper())
+    wb = Workbook.open(config.lp_workpaper())
     try:
         r = StatementReader(wb, "LP")
         facts: list[Fact] = []
@@ -711,6 +712,20 @@ def _build(fn, *a) -> str:
         return f"ERROR building: {type(exc).__name__}: {exc}"
 
 
+# The model may ask for several tools in one step and they run side by side. The builders each open the big workbooks, which
+# takes most of the memory a small server has, so they run one at a time, and let go of what they opened when they are done.
+_HEAVY = threading.Lock()
+
+
+def _heavy(*builders) -> str:
+    with _HEAVY:
+        try:
+            return "\n".join(_build(fn) for fn in builders)
+        finally:
+            release_all()
+            B.release_caches()
+
+
 @tool
 def build_fund_tables() -> str:
     """Build sections 2.1 (Fund Summary), 2.2 (LP Commitments), 4.1 (Balance Sheet) and
@@ -718,9 +733,7 @@ def build_fund_tables() -> str:
     the Fund Model. They are written straight into the report, every figure recorded and
     grounded, with prior-quarter comparatives. You do not type these numbers. You may add
     narrative to those sections afterwards with report_set_section (the tables stay)."""
-    out = [_build(B.build_balance_sheet), _build(B.build_operations),
-           _build(B.build_lp_commitments), _build(B.build_fund_summary)]
-    return "\n".join(out)
+    return _heavy(B.build_balance_sheet, B.build_operations, B.build_lp_commitments, B.build_fund_summary)
 
 
 @tool
@@ -729,7 +742,7 @@ def build_portfolio_tables() -> str:
     (composition chart), 5.4 (Portfolio Performance Summary) and 5.5 (Jobs & Impact),
     straight from the Fund Model and the Portfolio Metrics workbook. Every figure is
     recorded and grounded. Add narrative afterwards with report_set_section if wanted."""
-    return "\n".join([_build(B.build_portfolio), _build(B.build_jobs)])
+    return _heavy(B.build_portfolio, B.build_jobs)
 
 
 @tool

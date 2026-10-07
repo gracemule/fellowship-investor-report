@@ -87,6 +87,25 @@ The app's own data is small (tens of MB). The agent's saved checkpoints were the
 works (see the README) and a one-time `python -m chui_reporter.runtime.retention --apply` shrank them from 327 MB to 2 MB on
 6 Oct 2026. If the database ever looks large again, run that command without `--apply` first: it reports what it would keep.
 
+## Memory and CPU: what the free web service can do (7 Oct 2026)
+
+The free web service has **512 MB and 0.1 of a CPU**, and the application alone sits at about 120 MB. Building the Q2 report opens
+workbooks that cost roughly a hundred times their size in memory (the fund model about 150 MB). On 7 Oct 2026 the model asked for
+the two table builders in the same step; they ran side by side, memory sat at the limit for half an hour (the metrics showed it
+pinned at 536 MB), nothing answered (not the page, not Stop, not the database connections), and the run looked alive because its
+heartbeat kept beating. What now prevents that:
+
+* workbooks are opened through `Workbook.open`: shared, a few at a time (`CHUI_WORKBOOK_CACHE_MB`, default 220), and refused with a
+  readable error when the container's remaining memory would not hold them, instead of letting the whole server crawl;
+* the builders run **one at a time** and let go of what they opened; the PDF text they read is read once. The two builders went
+  from 26 CPU-seconds and a 535 MB peak to 8 CPU-seconds and 353 MB;
+* **Stop always ends**: it is recorded at once (a restart will not bring the run back), the page says *Stopping*, and a step that
+  does not end within `CHUI_STOP_GRACE` seconds (default 90) is let go of and the run is marked stopped;
+* the page says *Still on this step after N minutes* when the agent has been silent for five.
+
+Even so, 0.1 CPU is slow: the build's own work is about 10x slower than on a laptop. For a build that finishes in a sensible time
+use a paid instance (Render Starter has 0.5 CPU; Standard has 1 CPU and 2 GB). Memory in use is on the service's Metrics tab.
+
 ## Limits to know about
 
 * Free services have a fraction of a CPU: conversions and page images are slower than on a laptop.

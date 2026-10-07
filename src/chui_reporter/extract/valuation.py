@@ -124,7 +124,7 @@ class ValuationWorkbook:
     }
 
     def __init__(self, path: str | Path) -> None:
-        self.wb = Workbook(path)
+        self.wb = Workbook.open(path)
         self.path = self.wb.path
 
     # Sheets that sit alongside the valuation sheet for the same quarter but

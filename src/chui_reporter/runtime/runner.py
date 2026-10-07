@@ -49,6 +49,7 @@ MAX_SEGMENTS = 10           # stretches in one run
 MAX_NUDGES = 6
 HEARTBEAT_EVERY = 15.0
 STALE_AFTER = 75
+STOP_GRACE = float(os.environ.get("CHUI_STOP_GRACE", "90"))      # seconds a Stop waits for the step in progress before it lets go of it
 # How often an idle server looks in the database for runs a dead process left behind. Frequent while developing; in
 # production hourly, because a check every 30 seconds would keep a scale-to-zero database awake around the clock (a restart
 # already recovers everything once at start-up).
@@ -98,6 +99,7 @@ class Runtime:
         self._q: queue.Queue[str] = queue.Queue()
         self._lock = threading.RLock()
         self._stop_run = threading.Event()
+        self._abandoned: set[str] = set()          # runs let go of while a step was still running; the worker writes nothing for them
         self._steer: list[str] = []
         self._pending = ws_sync.Changes()
         self._announced: tuple = ()
@@ -154,6 +156,10 @@ class Runtime:
         except Exception:                                   # noqa: BLE001
             pass
         for r in state.stale_runs(self.store, STALE_AFTER):
+            if r.get("stop_requested_at"):          # the user stopped it; the restart must not bring it back
+                state.update_run(self.store, r["id"], status="stopped")
+                state.emit(self.store, "run.end", "Stopped.", run_id=r["id"], detail={"status": "stopped"})
+                continue
             state.requeue(self.store, r["id"])
             state.update_run(self.store, r["id"], status="queued", error=None)
             state.emit(self.store, "recovered", "The server restarted mid-run. Picking up from the last saved step.",
@@ -544,7 +550,25 @@ class Runtime:
                 state.emit(self.store, "run.end", "Stopped.", run_id=active["id"], detail={"status": "stopped"})
                 return {"ok": True}
             self._stop_run.set()
+            rid = active["id"]
+            state.request_stop(self.store, rid)
+            state.emit(self.store, "run.stopping", "Stopping. The agent finishes the step it is on first.", run_id=rid)
+            t = threading.Timer(STOP_GRACE, self._force_stop, args=(rid,))
+            t.daemon = True
+            t.start()
         return {"ok": True, "when": "after_current_step"}
+
+    def _force_stop(self, run_id: str) -> None:
+        """A Stop that the agent has not honoured (a step that does not end, such as a heavy job on a small server) is not left
+        hanging: the run is marked stopped and what the step was doing is abandoned."""
+        with self._lock:
+            run = state.get_run(self.store, run_id)
+            if not run or run["status"] not in ("running", "queued") or not self._stop_run.is_set():
+                return
+            self._abandoned.add(run_id)
+            state.update_run(self.store, run_id, status="stopped")
+            state.emit(self.store, "run.end", "Stopped. The step that was in progress was let go of.", run_id=run_id,
+                       detail={"status": "stopped", "forced": True})
 
     def _resume_waiting_for_files(self, changes) -> None:
         """A run waiting for source files carries on by itself when they arrive."""
@@ -571,18 +595,23 @@ class Runtime:
         except Stopped:
             outcome = "stopped"
         except RunFailed as exc:
-            state.update_run(self.store, run_id, status="failed", error=str(exc))
-            state.emit(self.store, "run.end", str(exc), run_id=run_id, detail={"status": "failed", "kind": exc.kind})
+            if run_id not in self._abandoned:
+                state.update_run(self.store, run_id, status="failed", error=str(exc))
+                state.emit(self.store, "run.end", str(exc), run_id=run_id, detail={"status": "failed", "kind": exc.kind})
             outcome = "failed"
         except Exception as exc:        # noqa: BLE001
             f = classify(exc)
-            state.update_run(self.store, run_id, status="failed", error=f.message)
-            state.emit(self.store, "run.end", f.message, run_id=run_id, detail={"status": "failed", "kind": f.kind})
+            if run_id not in self._abandoned:
+                state.update_run(self.store, run_id, status="failed", error=f.message)
+                state.emit(self.store, "run.end", f.message, run_id=run_id, detail={"status": "failed", "kind": f.kind})
             outcome = "failed"
         finally:
             hb.stop()
             self._drop_steer(run_id)
             self._prune(run["thread_id"])
+        if run_id in self._abandoned:       # the user was told it stopped when it was let go of
+            self._abandoned.discard(run_id)
+            return "stopped"
         if outcome == "stopped":
             state.update_run(self.store, run_id, status="stopped")
             state.emit(self.store, "run.end", "Stopped.", run_id=run_id, detail={"status": "stopped"})

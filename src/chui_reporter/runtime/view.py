@@ -14,6 +14,9 @@ from ..workspace.slots import is_durable
 from . import state
 
 
+STALLED_AFTER = 300         # seconds without a word from the agent before the page says the step is taking long
+
+
 def _labels(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
@@ -65,9 +68,16 @@ def build(rt) -> dict:
             detail = "Add " + _labels([c.slot.label for c in cov if c.slot.id in slots]) + " to your folder." if slots else ""
         elif st == "queued":
             phase, headline = "working", "Starting"
+        elif rt._stop_run.is_set():
+            phase, headline = "working", "Stopping"
+            detail = "Finishing the step in progress. If it does not end, it is let go of shortly."
         else:
             phase, headline = "working", "Working on the report"
             detail = _latest_step(store, run["id"]) or ""
+            last, now = rows.get("last_event_at"), rows.get("now")
+            idle = (now - last).total_seconds() if last and now else 0
+            if idle > STALLED_AFTER:                # nothing reported for a while: say so rather than look frozen
+                detail = (detail + " " if detail else "") + f"Still on this step after {int(idle // 60)} minutes."
         action = {"id": "stop", "label": "Stop"}
     elif not files:
         if synced_at:       # a folder was connected, and it holds nothing for this quarter (yet)

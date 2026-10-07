@@ -16,8 +16,16 @@ async function parse(res) {
 }
 
 export const get = (url) => fetch(url, { credentials: 'same-origin' }).then(parse);
-export const post = (url, data = {}) => fetch(url, {
-  method: 'POST', credentials: 'same-origin',
-  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-}).then(parse);
+// `timeout` (ms) is for calls that must not hang silently: a server that is overloaded may not answer at all.
+export const post = (url, data = {}, { timeout } = {}) => {
+  const ctl = timeout ? new AbortController() : null;
+  const timer = ctl && setTimeout(() => ctl.abort(), timeout);
+  return fetch(url, {
+    method: 'POST', credentials: 'same-origin', signal: ctl?.signal,
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  }).then(parse, (e) => {
+    if (e.name === 'AbortError') throw new ApiError('The server did not answer. It may be overloaded: wait a minute and try again.', 0);
+    throw e;
+  }).finally(() => clearTimeout(timer));
+};
 export const put = (url, body) => fetch(url, { method: 'PUT', credentials: 'same-origin', body }).then(parse);

@@ -167,6 +167,12 @@ def update_run(store: Store, run_id: str, **fields: Any) -> None:
                   (*values, run_id))
 
 
+def request_stop(store: Store, run_id: str) -> None:
+    """Remember that the user asked for this run to stop, so a restart does not pick it up again."""
+    with store.conn() as c:
+        c.execute(f"UPDATE {store._t('run')} SET stop_requested_at=now() WHERE id=%s", (run_id,))
+
+
 def touch(store: Store, run_id: str) -> None:
     with store.conn() as c:
         c.execute(f"UPDATE {store._t('run')} SET heartbeat_at=now() WHERE id=%s", (run_id,))
@@ -317,6 +323,8 @@ def snapshot_rows(store: Store, ws: str = WS, period: str | None = None) -> dict
       (SELECT to_jsonb(v) FROM (SELECT version, pages, created_at FROM {t('report_version')}
                                 WHERE report_id = 'fund-i-' || %(prev)s ORDER BY version DESC LIMIT 1) v) AS prior_version,
       (SELECT coalesce(max(id),0) FROM {t('event')} WHERE workspace_id=%(ws)s) AS last_event,
+      (SELECT max(created_at) FROM {t('event')} WHERE workspace_id=%(ws)s) AS last_event_at,
+      now() AS now,
       coalesce((SELECT jsonb_agg(to_jsonb(x)) FROM {t('service_state')} x), '[]'::jsonb) AS service_state,
       coalesce((SELECT jsonb_agg(to_jsonb(u)) FROM {t('service_usage')} u WHERE u.month=%(month)s), '[]'::jsonb) AS service_usage
     """

@@ -181,7 +181,7 @@ def _verify_cell(f: Fact, path: Path) -> tuple[bool, str]:
         return False, "workbook cited without sheet and cell; cite both"
     try:
         col_letters, row = coordinate_from_string(f.source_cell.upper())
-        wb = Workbook(path)
+        wb = Workbook.open(path)
         try:
             cell = wb.sheet(f.source_sheet).raw(row, column_index_from_string(col_letters))
         finally:
