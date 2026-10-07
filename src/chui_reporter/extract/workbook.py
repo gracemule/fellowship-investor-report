@@ -266,7 +266,7 @@ class Sheet:
 # left would not hold it (an error the agent can read) rather than letting the whole server crawl.
 _MB = 1_000_000
 _PER_BYTE = 100
-_BUDGET = int(float(os.environ.get("CHUI_WORKBOOK_CACHE_MB", "220")) * _MB)       # estimated memory the open workbooks may hold
+_BUDGET = int(float(os.environ.get("CHUI_WORKBOOK_CACHE_MB", "160")) * _MB)       # estimated memory the open workbooks may hold
 _LOAD = threading.Lock()
 _OPEN: OrderedDict = OrderedDict()
 

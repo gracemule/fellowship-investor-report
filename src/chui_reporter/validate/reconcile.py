@@ -67,7 +67,7 @@ def load_fund_model(path, quarter_label_row: int = 4) -> dict[str, dict[str, flo
     the figures are Q2 2026 -- a stale label in the source. Column position is
     used, and the discrepancy is recorded in the returned metadata.
     """
-    wb = Workbook(path)
+    wb = Workbook.open(path)
     sh = wb.sheet(FM_SHEET)
     out: dict[str, dict[str, float]] = {}
     for r in range(FM_FIRST_ROW, FM_LAST_ROW + 1):

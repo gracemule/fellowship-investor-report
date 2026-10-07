@@ -68,6 +68,8 @@ def build(rt) -> dict:
             detail = "Add " + _labels([c.slot.label for c in cov if c.slot.id in slots]) + " to your folder." if slots else ""
         elif st == "queued":
             phase, headline = "working", "Starting"
+            if rt._abandoned:                       # an earlier step that was let go of has not ended yet
+                detail = "Waiting for the step that was let go of to end."
         elif rt._stop_run.is_set():
             phase, headline = "working", "Stopping"
             detail = "Finishing the step in progress. If it does not end, it is let go of shortly."

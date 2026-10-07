@@ -101,7 +101,16 @@ heartbeat kept beating. What now prevents that:
   from 26 CPU-seconds and a 535 MB peak to 8 CPU-seconds and 353 MB;
 * **Stop always ends**: it is recorded at once (a restart will not bring the run back), the page says *Stopping*, and a step that
   does not end within `CHUI_STOP_GRACE` seconds (default 90) is let go of and the run is marked stopped;
-* the page says *Still on this step after N minutes* when the agent has been silent for five.
+* the page says *Still on this step after N minutes* when the agent has been silent for five;
+* **every tool that opens a workbook or document takes its turn** (14 of them), not only the two builders: the first fix covered
+  only the builders, and the next build was killed for running out of memory when three readers ran at once (468 MB, then the
+  process was killed). Workbooks kept open between tools are limited to `CHUI_WORKBOOK_CACHE_MB` (default 160);
+* **a killed run is found again within about two minutes of the restart.** The hourly check is deliberately slow (so Neon can
+  sleep), and a process that restarts within a minute leaves its run's last heartbeat too fresh to look dead, so the run waited an
+  hour. A start-up now looks again after 90 seconds and after 5 minutes. A run found dead four times is handed back to you
+  (*Press Continue*) instead of being resumed for ever;
+* a model call that hears nothing for `CHUI_LLM_TIMEOUT` seconds (default 360) ends and is retried with a pause, instead of waiting
+  for the library's ten minutes and its own retries.
 
 Even so, 0.1 CPU is slow: the build's own work is about 10x slower than on a laptop. For a build that finishes in a sensible time
 use a paid instance (Render Starter has 0.5 CPU; Standard has 1 CPU and 2 GB). Memory in use is on the service's Metrics tab.

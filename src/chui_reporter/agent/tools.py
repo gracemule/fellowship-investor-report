@@ -7,6 +7,7 @@ recall one. The extraction layer underneath is the same code the tests cover.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import threading
@@ -714,7 +715,7 @@ def _build(fn, *a) -> str:
 
 # The model may ask for several tools in one step and they run side by side. The builders each open the big workbooks, which
 # takes most of the memory a small server has, so they run one at a time, and let go of what they opened when they are done.
-_HEAVY = threading.Lock()
+_HEAVY = threading.RLock()
 
 
 def _heavy(*builders) -> str:
@@ -1161,3 +1162,30 @@ ALL_TOOLS = [
     report_outline,
     report_render,
 ]
+
+
+# The model may ask for several tools in one step, and they run side by side. The ones that open workbooks and documents take most
+# of the memory a small server has (the report build was killed for it on 7 Oct 2026, three of them at once), so they take turns.
+# The ones that read many or large workbooks also let go of what they opened when they are done.
+_TAKE_TURNS = {"read_pdf", "excel_sheets", "excel_find_value", "excel_dump_region", "portfolio_valuations", "fund_capital_position",
+               "financial_statements", "prior_report_table", "report_save_facts", "report_derive_fact", "build_fund_tables",
+               "build_portfolio_tables", "inspect_pages", "report_render"}
+_LET_GO_AFTER = {"portfolio_valuations", "fund_capital_position", "financial_statements"}
+
+
+def _taking_turns(fn, let_go: bool = False):
+    @functools.wraps(fn)
+    def run(*a, **k):
+        with _HEAVY:
+            try:
+                return fn(*a, **k)
+            finally:
+                if let_go:
+                    release_all()
+                    B.release_caches()
+    return run
+
+
+for _t in ALL_TOOLS:
+    if _t.name in _TAKE_TURNS and getattr(_t, "func", None) is not None:
+        _t.func = _taking_turns(_t.func, _t.name in _LET_GO_AFTER)

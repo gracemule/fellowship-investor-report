@@ -124,6 +124,12 @@ def _chat_deepseek_thinking():
     return ChatDeepSeekThinking
 
 
+def _limits() -> dict:
+    """A model call that hears nothing back must end, not wait for the library's ten minutes (and its own retries on top): the
+    run retries a failed call itself, with a pause, and says so. CHUI_LLM_TIMEOUT is seconds without a reply."""
+    return {"timeout": float(os.environ.get("CHUI_LLM_TIMEOUT", "360")), "max_retries": 1}
+
+
 def get_llm(
     provider: str | None = None,
     model: str | None = None,
@@ -138,7 +144,7 @@ def get_llm(
     if spec.name == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=name, api_key=key, max_tokens=16000, temperature=0)
+        return ChatAnthropic(model=name, api_key=key, max_tokens=16000, temperature=0, **_limits())
 
     # deepseek
     think = thinking_enabled(thinking)
@@ -150,6 +156,7 @@ def get_llm(
             max_tokens=32000,
             reasoning_effort=effort or os.environ.get("CHUI_REASONING_EFFORT", "high"),
             extra_body={"thinking": {"type": "enabled"}},
+            **_limits(),
         )
     from langchain_deepseek import ChatDeepSeek
 
@@ -159,6 +166,7 @@ def get_llm(
         max_tokens=32000,
         temperature=0,
         extra_body={"thinking": {"type": "disabled"}},
+        **_limits(),
     )
 
 

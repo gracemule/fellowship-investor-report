@@ -49,6 +49,7 @@ MAX_SEGMENTS = 10           # stretches in one run
 MAX_NUDGES = 6
 HEARTBEAT_EVERY = 15.0
 STALE_AFTER = 75
+MAX_ATTEMPTS = 4            # a run found dead this many times is not resumed again by itself: something is killing it
 STOP_GRACE = float(os.environ.get("CHUI_STOP_GRACE", "90"))      # seconds a Stop waits for the step in progress before it lets go of it
 # How often an idle server looks in the database for runs a dead process left behind. Frequent while developing; in
 # production hourly, because a check every 30 seconds would keep a scale-to-zero database awake around the clock (a restart
@@ -99,6 +100,7 @@ class Runtime:
         self._q: queue.Queue[str] = queue.Queue()
         self._lock = threading.RLock()
         self._stop_run = threading.Event()
+        self._recover_again: list[float] = []     # when to look again for a run the previous process left, after a start-up
         self._abandoned: set[str] = set()          # runs let go of while a step was still running; the worker writes nothing for them
         self._steer: list[str] = []
         self._pending = ws_sync.Changes()
@@ -130,6 +132,10 @@ class Runtime:
             from ..agent.graph import build_pooled_checkpointer
             self.saver, self._pool = build_pooled_checkpointer()
         self.recover()
+        # A process killed for running out of memory restarts within a minute, while its run's last heartbeat is still fresh enough
+        # not to look dead, and the hourly check would leave the run waiting that long: so look again once it has had time to go quiet.
+        now = time.time()
+        self._recover_again = [now + STALE_AFTER + 15, now + 300]
         self._thread = threading.Thread(target=self._worker, name="chui-runner", daemon=True)
         self._thread.start()
 
@@ -160,6 +166,12 @@ class Runtime:
                 state.update_run(self.store, r["id"], status="stopped")
                 state.emit(self.store, "run.end", "Stopped.", run_id=r["id"], detail={"status": "stopped"})
                 continue
+            if int(r.get("attempts") or 0) >= MAX_ATTEMPTS:
+                msg = ("The server stopped several times while working on this (it is probably running out of memory). "
+                       "Press Continue to try again.")
+                state.update_run(self.store, r["id"], status="failed", error=msg)
+                state.emit(self.store, "run.end", msg, run_id=r["id"], detail={"status": "failed", "kind": "crash_loop"})
+                continue
             state.requeue(self.store, r["id"])
             state.update_run(self.store, r["id"], status="queued", error=None)
             state.emit(self.store, "recovered", "The server restarted mid-run. Picking up from the last saved step.",
@@ -171,6 +183,16 @@ class Runtime:
         for rid in queued:
             self._q.put(rid)
         return n
+
+    def _recover_if_due(self) -> None:
+        due = [t for t in self._recover_again if time.time() >= t]
+        if not due:
+            return
+        self._recover_again = [t for t in self._recover_again if t not in due]
+        try:
+            self.recover()
+        except Exception:                                   # noqa: BLE001
+            pass
 
     def _prune(self, thread_id: str) -> None:
         """Shrink one conversation's saved memory to its newest checkpoints. Housekeeping: it never fails or delays a run."""
@@ -209,6 +231,7 @@ class Runtime:
             try:
                 rid = self._q.get(timeout=2.0)
             except queue.Empty:
+                self._recover_if_due()
                 if time.time() - last_janitor > janitor_every():
                     last_janitor = time.time()
                     try:

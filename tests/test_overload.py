@@ -176,3 +176,69 @@ def test_the_page_says_when_it_is_stopping_and_when_a_step_has_gone_quiet(store,
     assert s["headline"] == "Stopping" and s["phase"] == "working" and "Finishing the step" in s["detail"]
     rt._stop_run.clear()
     assert view.STALLED_AFTER == 300
+
+
+# ---- every tool that opens documents takes its turn ----------------------------------------------------------------------------
+
+
+def test_every_tool_that_opens_documents_takes_turns_not_just_the_builders():
+    from chui_reporter.agent import tools as T
+
+    names = {t.name: t for t in T.ALL_TOOLS}
+    assert T._TAKE_TURNS <= set(names)
+    for n in T._TAKE_TURNS:
+        assert hasattr(names[n].func, "__wrapped__"), f"{n} can still run alongside another"
+    for light in ("list_sources", "report_set_section", "delegate_research", "ask_user", "research_macro"):
+        assert not hasattr(names[light].func, "__wrapped__"), f"{light} does not open documents and must not wait for them"
+
+
+def test_tools_wrapped_to_take_turns_never_overlap_and_let_go_when_asked(monkeypatch):
+    from chui_reporter.agent import tools as T
+
+    live, peak, freed = [0], [0], []
+    monkeypatch.setattr(T, "release_all", lambda: freed.append(1))
+    monkeypatch.setattr(T.B, "release_caches", lambda: freed.append(2))
+
+    def work():
+        live[0] += 1
+        peak[0] = max(peak[0], live[0])
+        time.sleep(0.1)
+        live[0] -= 1
+        return "ok"
+
+    plain, big = T._taking_turns(work), T._taking_turns(work, let_go=True)
+    threads = [threading.Thread(target=f) for f in (plain, big, plain, big)]       # four tools asked for in one step
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert peak[0] == 1 and sorted(freed) == [1, 1, 2, 2], "only the big readers let go"
+
+
+# ---- a run left by a killed process is found shortly after the restart, and a run that keeps dying is not resumed for ever ------
+
+
+def _age_heartbeat(store, rid, seconds):
+    with store.conn() as c:
+        c.execute(f"UPDATE {store._t('run')} SET heartbeat_at = now() - make_interval(secs => %s) WHERE id=%s", (seconds, rid))
+
+
+def test_a_run_whose_process_was_killed_is_picked_up_after_the_restart_not_an_hour_later(store, rt):
+    rid = _running(store, rt)
+    _age_heartbeat(store, rid, 60)                       # the restart came within a minute: it does not yet look dead
+    assert rt.recover() == 0 and state.get_run(store, rid)["status"] == "running"
+    _age_heartbeat(store, rid, 100)                      # ... but a little later it plainly is
+    rt._recover_again = [time.time() - 1, time.time() + 3600]
+    rt._recover_if_due()
+    assert state.get_run(store, rid)["status"] == "queued", "resumed from where it stopped"
+    assert len(rt._recover_again) == 1, "each look is made once"
+    rt._recover_if_due()
+    assert len(rt._recover_again) == 1, "and not before its time"
+
+
+def test_a_run_that_keeps_being_killed_is_handed_back_to_the_user_instead_of_looping(store, rt):
+    rid = _running(store, rt)
+    state.update_run(store, rid, attempts=runner.MAX_ATTEMPTS)
+    _age_heartbeat(store, rid, 600)
+    assert rt.recover() == 0
+    run = state.get_run(store, rid)
+    assert run["status"] == "failed" and "running out of memory" in run["error"]
+    assert any(e["kind"] == "run.end" and e["detail"].get("kind") == "crash_loop" for e in state.recent_events(store, 20))

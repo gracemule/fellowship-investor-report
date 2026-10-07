@@ -204,3 +204,14 @@ def test_agent_builds_with_either_provider_and_all_tools(monkeypatch, provider, 
     monkeypatch.setenv(key, "sk-offline")
     agent = build_agent(None, provider)
     assert len(agent.nodes["tools"].bound.tools_by_name) == len(ALL_TOOLS)
+
+
+def test_a_model_call_that_hears_nothing_ends_instead_of_waiting_ten_minutes(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    for provider in ("deepseek", "anthropic"):
+        m = L.get_llm(provider)
+        assert m.max_retries == 1
+        assert float(getattr(m, "request_timeout", None) or getattr(m, "default_request_timeout")) == 360.0, provider
+    monkeypatch.setenv("CHUI_LLM_TIMEOUT", "90")
+    assert float(L.get_llm("deepseek").request_timeout) == 90.0
