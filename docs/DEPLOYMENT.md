@@ -104,7 +104,10 @@ heartbeat kept beating. What now prevents that:
 * the page says *Still on this step after N minutes* when the agent has been silent for five;
 * **every tool that opens a workbook or document takes its turn** (14 of them), not only the two builders: the first fix covered
   only the builders, and the next build was killed for running out of memory when three readers ran at once (468 MB, then the
-  process was killed). Workbooks kept open between tools are limited to `CHUI_WORKBOOK_CACHE_MB` (default 160);
+  process was killed). Workbooks kept open between tools are limited to `CHUI_WORKBOOK_CACHE_MB` (default 160), freed memory is handed back to the system
+  (Python keeps it, so usage looks high after a heavy tool), and a workbook is refused only when the server is truly out of room
+  (`CHUI_REFUSE_BELOW`, default 0.4 of its size): a first, stricter version refused the fund model while most of the usage was
+  freed memory, and the agent retried it three times without progress;
 * **a killed run is found again within about two minutes of the restart.** The hourly check is deliberately slow (so Neon can
   sleep), and a process that restarts within a minute leaves its run's last heartbeat too fresh to look dead, so the run waited an
   hour. A start-up now looks again after 90 seconds and after 5 minutes. A run found dead four times is handed back to you

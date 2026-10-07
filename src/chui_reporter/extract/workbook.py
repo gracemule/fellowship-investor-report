@@ -267,6 +267,7 @@ class Sheet:
 _MB = 1_000_000
 _PER_BYTE = 100
 _BUDGET = int(float(os.environ.get("CHUI_WORKBOOK_CACHE_MB", "160")) * _MB)       # estimated memory the open workbooks may hold
+_REFUSE_BELOW = float(os.environ.get("CHUI_REFUSE_BELOW", "0.4"))         # of a workbook's estimated size
 _LOAD = threading.Lock()
 _OPEN: OrderedDict = OrderedDict()
 
@@ -293,6 +294,18 @@ def headroom() -> int | None:
         return None
 
 
+def _give_back() -> None:
+    """Hand freed memory back to the operating system. Python keeps what it has freed for its own reuse, so the container's usage
+    stays high after a heavy job even though most of it is free; where the C library can be asked, ask it."""
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):                    # not glibc (a laptop): nothing to do
+        pass
+
+
 def _held() -> int:
     return sum(w._est for w in _OPEN.values())
 
@@ -304,7 +317,7 @@ def _evict(need: int) -> None:
         _OPEN.popitem(last=False)
         dropped = True
     if dropped:
-        gc.collect()                            # the sheets point back at their book, so reference counting alone does not free it
+        _give_back()                            # the sheets point back at their book, so reference counting alone does not free it
 
 
 def release_all() -> None:
@@ -329,14 +342,18 @@ class Workbook:
                 _OPEN.move_to_end(key)
                 return wb
             _evict(need)
+            # What Python has freed is still counted as used, and most of it is reused by the next workbook, so the bar for refusing is
+            # low: the tools take turns, and this is only the last defence against a server that is truly out of memory.
             room = headroom()
-            if room is not None and room < need * 1.3:
+            if room is not None and room < need * _REFUSE_BELOW:
                 _evict(_BUDGET + 1)
+                _give_back()
                 room = headroom()
-                if room is not None and room < need * 1.3:
+                if room is not None and room < need * _REFUSE_BELOW:
                     raise ExtractionError(
                         f"There is not enough memory on this server to open {p.name} right now (about {room // _MB} MB free, "
-                        f"about {int(need * 1.3) // _MB} MB needed). Other work is using it: wait for that to finish, then try again.")
+                        f"about {int(need * _REFUSE_BELOW) // _MB} MB needed at least). Other work is using it: wait for that to "
+                        f"finish, then try again.")
             wb = cls(p)
             wb._shared, wb._est = True, need
             _OPEN[key] = wb
