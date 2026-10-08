@@ -42,7 +42,7 @@ to render anything else.
 6. **One input box talks to the agent.** It grows as you type, Enter sends, files can be attached (button, drag and
    drop, or paste; PDF, Excel, Word, CSV, text, images). While the agent works, a message is steering: it is queued
    and delivered at the next step, and the send button becomes Stop when the box is empty. When the agent has asked
-   a question, the box is the answer. Attached files are stored under `Uploads/` and survive folder syncs.
+   a question, the box is the answer. Attached files are stored under `Uploads/` and survive folder syncs. Images may be any common kind (PNG, JPEG, WEBP, GIF, BMP, TIFF, AVIF, and a phone's HEIC): before the model sees one it is turned upright, put on a white page if it is transparent, scaled from 16-bit, reduced to at most 1600 px and sent as a plain JPEG (`extract/images.py`), so the format is never why it reads something different from what you see.
 7. **Every render becomes a numbered version** (PDF, Word, review notes) with the sections that changed, so
    the interface can show what an update touched. Any version can be opened beside the latest, its changed pages
    are marked, and "Changes" shows the wording that changed (kept from the version after this feature shipped).

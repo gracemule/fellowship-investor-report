@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pypdfium2>=5.14.0",
     "pillow>=12.3.0",
+    "pillow-heif>=0.20",          # a phone's HEIC photos: attached images are read whatever their format
     "numpy>=2.5.3",
     "langgraph>=1.2.12,<2",
     "langchain-anthropic>=1.7.5",

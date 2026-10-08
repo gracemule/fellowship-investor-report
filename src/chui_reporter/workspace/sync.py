@@ -27,6 +27,7 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from ..agent.store import Store
+from ..extract.images import IMAGE_EXT
 from .slots import SLOTS, Slot, is_durable, slot_files, slot_for_path  # noqa: F401
 
 MAX_FILE_BYTES = 60 * 1024 * 1024
@@ -36,9 +37,7 @@ SHARED = "shared"             # files that stand across quarters
 # Files the user attaches in the composer live under this prefix. They are not part of the folder
 # the browser mirrors, so a folder sync must never mark them removed.
 UPLOADS = "Uploads/"
-ATTACH_EXT = {".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv", ".txt", ".md", ".json",
-              ".png", ".jpg", ".jpeg", ".webp", ".gif"}
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+ATTACH_EXT = {".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv", ".txt", ".md", ".json"} | IMAGE_EXT
 
 
 class SyncError(ValueError):

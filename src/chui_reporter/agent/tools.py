@@ -94,38 +94,36 @@ def list_sources() -> str:
 
 @tool
 def look_at_image(file_name: str, question: str = "Describe what this shows.") -> str:
-    """Look at an image the user attached (PNG, JPG, WEBP, GIF) and answer a question about it.
+    """Look at an image the user attached (PNG, JPG, WEBP, GIF, BMP, TIFF, AVIF, or a phone's HEIC) and answer a question about it.
 
     Use it for layout, design and qualitative guidance (a screenshot of a problem, a sketch of what
     they want, a photograph). If the user wants figures taken from an image, read them here and record
     each with report_save_facts (source_file the image's name, source_cell where in the image): they are
     recorded as the user's own and flagged for their review, since nothing can verify an image by machine."""
-    import base64
-    import io
-
     from langchain_core.messages import HumanMessage
 
-    from PIL import Image
-
+    from ..extract.images import IMAGE_EXT, ImageError, to_model_jpeg
     from .llm import get_llm
 
+    kinds = tuple(sorted(IMAGE_EXT))
     try:
-        path = _resolve_typed(file_name, (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+        path = _resolve_typed(file_name, kinds)
     except FileNotFoundError as exc:
         return f"ERROR: {exc}"
-    if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+    if path.suffix.lower() not in IMAGE_EXT:
         return f"ERROR: {path.name} is not an image; use read_pdf, read_text or the excel tools."
     try:
-        img = Image.open(path).convert("RGB")
-        img.thumbnail((1600, 1600))
-        buf = io.BytesIO()
-        img.save(buf, "JPEG", quality=85)
-        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        url = to_model_jpeg(path)
+    except ImageError as exc:
+        return f"ERROR: {exc}"
+    try:
         reply = get_llm().invoke([HumanMessage(content=[
             {"type": "text", "text": question[:600]}, {"type": "image_url", "image_url": {"url": url}}])])
     except Exception as exc:  # noqa: BLE001
         return f"ERROR: could not look at {path.name}: {type(exc).__name__}: {exc}"
-    return (f"[{path.name}] {reply.content}\n(Figures read from an image cannot be verified by machine. If the user "
+    said = reply.content if isinstance(reply.content, str) else " ".join(
+        b.get("text", "") for b in reply.content if isinstance(b, dict))
+    return (f"[{path.name}] {said}\n(Figures read from an image cannot be verified by machine. If the user "
             f"attached it for its figures, record them with report_save_facts (source_file {path.name!r}); they are kept as "
             f"the user's and flagged for their review.)")
 

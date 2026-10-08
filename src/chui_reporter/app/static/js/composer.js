@@ -15,8 +15,10 @@ import { $, ICON, clear, h, svg, toast } from './util.js';
 
 const MAX_FILES = 8;
 const MAX_BYTES = 60 * 1024 * 1024;
-const OK_EXT = /\.(pdf|xlsx|xlsm|xls|docx|csv|txt|md|json|png|jpg|jpeg|webp|gif)$/i;
-const IMG = /\.(png|jpe?g|webp|gif)$/i;
+const OK_EXT = /\.(pdf|xlsx|xlsm|xls|docx|csv|txt|md|json|png|jpe?g|jpe|jfif|webp|gif|bmp|tiff?|avif|heic|heif)$/i;
+const IMG = /\.(png|jpe?g|jpe|jfif|webp|gif|bmp|tiff?|avif|heic|heif)$/i;
+// What the browser itself can draw as a thumbnail (a phone's HEIC and a scan's TIFF are read by the server, not shown by Chrome).
+const DRAWABLE = /\.(png|jpe?g|jpe|jfif|webp|gif|bmp|avif)$/i;
 const MAX_H = 216;
 const coarse = matchMedia('(pointer: coarse)').matches;
 
@@ -93,7 +95,7 @@ export function mountComposer() {
       if (files.length >= MAX_FILES) { toast(`You can attach up to ${MAX_FILES} files at a time.`, 'warn'); break; }
       if (!OK_EXT.test(f.name)) { toast(`${f.name}: that kind of file can't be attached. PDF, Excel, Word, CSV, text and images can.`, 'warn'); continue; }
       if (f.size > MAX_BYTES) { toast(`${f.name} is over 60 MB.`, 'warn'); continue; }
-      const entry = { id: ++n, name: f.name, kind: IMG.test(f.name) ? 'image' : 'document', status: 'uploading', thumb: IMG.test(f.name) ? URL.createObjectURL(f) : null };
+      const entry = { id: ++n, name: f.name, kind: IMG.test(f.name) ? 'image' : 'document', status: 'uploading', thumb: DRAWABLE.test(f.name) ? URL.createObjectURL(f) : null };
       files.push(entry); paint();
       try {
         const res = await fetch(`/api/attachments?name=${encodeURIComponent(f.name)}`, { method: 'PUT', credentials: 'same-origin', body: f });

@@ -30,6 +30,7 @@ from pathlib import Path
 
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 
+from ..extract.images import IMAGE_EXT
 from ..extract.workbook import Value, Workbook
 from .store import Fact, Store
 
@@ -82,7 +83,7 @@ def verify_claim(f: Fact, resolve, store: Store | None = None) -> tuple[bool, st
     return ok, why
 
 
-_IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_IMAGES = IMAGE_EXT
 
 
 def verify_claim_ex(f: Fact, resolve, store: Store | None = None) -> tuple[bool, str, str]:
